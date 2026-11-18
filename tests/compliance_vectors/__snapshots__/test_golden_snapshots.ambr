@@ -333,6 +333,7 @@
     }),
     'results': dict({
       'node-01': dict({
+        'available': False,
         'data': dict({
         }),
         'postgres_version': dict({
@@ -341,6 +342,7 @@
           'server_version_num': 'Unknown',
           'version': 'Unknown',
         }),
+        'reason': 'No query statistics in the window. The monitoring records a query from pg_stat_statements once it has run at least 3 times and for 1 s in total, so an idle or newly connected database has none yet.',
       }),
     }),
     'timestamptz': '2026-01-01T00:00:00Z',
@@ -579,6 +581,7 @@
     }),
     'results': dict({
       'node-01': dict({
+        'available': False,
         'data': dict({
         }),
         'postgres_version': dict({
@@ -587,6 +590,7 @@
           'server_version_num': 'Unknown',
           'version': 'Unknown',
         }),
+        'reason': 'No query statistics in the window. The monitoring records a query from pg_stat_statements once it has run at least 3 times and for 1 s in total, so an idle or newly connected database has none yet.',
       }),
     }),
     'timestamptz': '2026-01-01T00:00:00Z',

@@ -186,7 +186,9 @@ def test_independent_primary_is_never_a_standby(generator):
         assert generator.get_all_nodes("default") == {"primary": "illdb2", "standbys": ["replica"]}
     message = warning.call_args.args[0]
     assert "--cluster" in message
-    assert "omitting 'illdb3'" in message
+    assert "'illdb3'" in message
+    assert "one report per primary" in message
+    assert "['replica']" in message
 
 
 @pytest.mark.parametrize("unknown_response", [
@@ -220,13 +222,13 @@ def test_unknown_roles_preserve_nodes_and_prefer_confirmed_primary(generator, un
     assert "default" in unknown_messages[0]
     for node, role in roles.items():
         assert (f"'{node}'" in unknown_messages[0]) == (role is None)
-    omitted = [message for message in messages if "omitting" in message]
+    split = [message for message in messages if "one report per primary" in message]
     if "e" in roles:
-        assert len(omitted) == 1
-        assert "omitting 'e'" in omitted[0]
-        assert "--cluster" in omitted[0]
+        assert len(split) == 1
+        assert "'e'" in split[0]
+        assert "--cluster" in split[0]
     else:
-        assert omitted == []
+        assert split == []
 
 
 def test_index_overlap_does_not_match_another_databases_target_name(generator):

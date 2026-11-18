@@ -616,9 +616,17 @@ Targets in one replication cluster should share `--cluster`; use different names
 Adding a new target to a cluster that already has targets prints a note naming up to three of them.
 For existing targets, edit `custom_tags.cluster` in `instances.yml`. An add with a different cluster
 is refused; an add without `--cluster` preserves an existing target's cluster.
-The reporter keeps the first confirmed primary by node name and omits additional confirmed primaries
-with a warning. Nodes with unknown roles are named in one warning and kept in the report: the first
-fills the primary slot if no primary is confirmed, and the rest are listed as standbys.
+When a label contains several confirmed primaries, monitoring v4 generates a separate report for each.
+Standbys join the primary with the same PostgreSQL system identifier (`sys_id`), if exactly one matches.
+Unassignable standbys and nodes with unknown roles stay with the first primary by node name; a warning names them.
+Split units use `<cluster>/<primary node>` in per-query `cluster_id`, with URL-encoded file prefixes
+(for example, `default%2Fnode-01_A002.json`), and each gets a separate platform report.
+A label with one primary keeps its existing names and node grouping. With no confirmed primary,
+the first unknown-role node fills the primary slot and the rest are listed as standbys.
+
+An empty check result includes `available` and `reason`. Without source rows, it says what could be
+missing rather than claiming there are no issues. Index checks say `available: true` with "nothing
+found" only when their source had rows and all were excluded as system indexes.
 
 #### Configuration and maintenance
 ```bash
@@ -1061,8 +1069,8 @@ PGPASSWORD=... postgresai checkup \
 
   ```json
   {
-    "H002": { "contract_version": "1.0.0", "checkId": "H002", "...": "..." },
-    "F003": { "contract_version": "1.0.0", "checkId": "F003", "...": "..." }
+    "H002": { "contract_version": "1.1.0", "checkId": "H002", "...": "..." },
+    "F003": { "contract_version": "1.1.0", "checkId": "F003", "...": "..." }
   }
   ```
 
@@ -1177,7 +1185,7 @@ A consumer should accept any report whose `contract_version` shares its **major*
 and has a **minor ≥** the minimum it was built against. Pin the major, tolerate
 additive minors, and treat a major bump as a required review.
 
-The current contract version is **`1.0.0`**.
+The current contract version is **`1.1.0`** (1.1.0: in full mode, a node result without data carries `available` and `reason`).
 
 ### Envelope fields
 
@@ -1192,6 +1200,21 @@ Beyond the check-specific `results`, every report includes:
 | `timestamptz` | Report generation time (ISO 8601). |
 | `nodes` | `{ "primary": string, "standbys": string[] }`. |
 | `version` / `build_ts` | CLI/package version and build timestamp (may be null). |
+
+### Node result fields
+
+`results` maps each node name to a node result:
+
+| Field | Meaning |
+|-------|---------|
+| `data` | The check's findings, usually keyed by database. `{}` when there are none. |
+| `postgres_version` | `{ version, server_version_num, server_major_ver, server_minor_ver }` (most checks). |
+| `available` | Full mode only, and only when `data` is empty (contract 1.1.0). `false`: the report cannot say — not collected yet, the query failed, or a metric that records only findings has none. `true`: the check's metric had rows for the node and none was a finding. |
+| `reason` | Full mode only, next to `available`: one plain sentence for the reader. |
+
+Express mode does not emit `available` or `reason`: it queries the database directly, and its
+H00x/F00x results list each database with empty lists when nothing is found. I001 on PostgreSQL < 16
+also has `data.available: false` (no `pg_stat_io`); that field describes the data, not the node.
 
 ## Development
 

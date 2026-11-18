@@ -1679,7 +1679,10 @@ def test_main_all_reports_does_not_crash_when_output_is_file(tmp_path, monkeypat
         def get_all_clusters(self):
             return ["local"]
 
-        def generate_all_reports(self, cluster, node_name, combine_nodes=True):
+        def get_reporting_units(self, cluster):
+            return [{"cluster": cluster, "nodes": {"primary": "node-1", "standbys": []}}]
+
+        def generate_all_reports(self, cluster, node_name, combine_nodes=True, reporting_nodes=None):
             # Minimal plausible payload
             return {
                 "A002": {"checkId": "A002", "results": {"node-1": {"data": {"ok": True}}}},

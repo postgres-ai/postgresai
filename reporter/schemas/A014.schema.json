@@ -604,6 +604,8 @@
         "data"
       ],
       "properties": {
+        "available": { "type": "boolean" },
+        "reason": { "type": "string" },
         "data": {
           "$ref": "#/$defs/data"
         },

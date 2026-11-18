@@ -91,6 +91,8 @@ def run_main(monkeypatch: pytest.MonkeyPatch, tmp_path: Any):
 
         monkeypatch.setattr(postgres_reports, "make_request", fake_make_request)
         monkeypatch.setattr(PostgresReportGenerator, "test_connection", lambda self: True)
+        monkeypatch.setattr(PostgresReportGenerator, "get_reporting_units",
+                            lambda self, c: [{"cluster": c, "nodes": {"primary": "node-01", "standbys": []}}])
         monkeypatch.setattr(PostgresReportGenerator, "generate_all_reports", fake_generate_all)
         monkeypatch.setattr(PostgresReportGenerator, "generate_per_query_jsons",
                             lambda self, *a, **k: [])

@@ -36,6 +36,7 @@ def test_main_auto_discover_clusters(monkeypatch) -> None:
     ]
 
     mock_generator = MagicMock(spec=PostgresReportGenerator)
+    mock_generator.get_reporting_units.side_effect = lambda c: [{"cluster": c, "nodes": {"primary": "node-01", "standbys": []}}]
     mock_generator.pg_conn = None
     mock_generator.test_connection.return_value = True
     mock_generator.get_all_clusters.return_value = ['cluster1', 'cluster2', 'cluster3']
@@ -66,6 +67,7 @@ def test_main_uses_default_cluster_when_none_found(monkeypatch) -> None:
     ]
 
     mock_generator = MagicMock(spec=PostgresReportGenerator)
+    mock_generator.get_reporting_units.side_effect = lambda c: [{"cluster": c, "nodes": {"primary": "node-01", "standbys": []}}]
     mock_generator.pg_conn = None
     mock_generator.test_connection.return_value = True
     mock_generator.get_all_clusters.return_value = []  # No clusters found
@@ -154,6 +156,7 @@ def test_main_with_specific_check_id() -> None:
     ]
 
     mock_generator = MagicMock(spec=PostgresReportGenerator)
+    mock_generator.get_reporting_units.side_effect = lambda c: [{"cluster": c, "nodes": {"primary": "node-01", "standbys": []}}]
     mock_generator.pg_conn = None
     mock_generator.test_connection.return_value = True
     mock_generator.get_all_clusters.return_value = ['local']
@@ -186,6 +189,7 @@ def test_main_with_no_combine_nodes_flag() -> None:
     ]
 
     mock_generator = MagicMock(spec=PostgresReportGenerator)
+    mock_generator.get_reporting_units.side_effect = lambda c: [{"cluster": c, "nodes": {"primary": "node-01", "standbys": []}}]
     mock_generator.pg_conn = None
     mock_generator.test_connection.return_value = True
     mock_generator.get_all_clusters.return_value = ['local']
@@ -219,6 +223,7 @@ def test_main_skips_upload_when_report_creation_fails() -> None:
     ]
 
     mock_generator = MagicMock(spec=PostgresReportGenerator)
+    mock_generator.get_reporting_units.side_effect = lambda c: [{"cluster": c, "nodes": {"primary": "node-01", "standbys": []}}]
     mock_generator.pg_conn = None
     mock_generator.test_connection.return_value = True
     mock_generator.get_all_clusters.return_value = ['cluster1']
@@ -255,6 +260,7 @@ def test_main_with_specific_cluster() -> None:
     ]
 
     mock_generator = MagicMock(spec=PostgresReportGenerator)
+    mock_generator.get_reporting_units.side_effect = lambda c: [{"cluster": c, "nodes": {"primary": "node-01", "standbys": []}}]
     mock_generator.pg_conn = None
     mock_generator.test_connection.return_value = True
     mock_generator.generate_all_reports.return_value = {}
@@ -293,6 +299,7 @@ def test_main_skips_upload_when_project_name_missing() -> None:
     ]
 
     mock_generator = MagicMock(spec=PostgresReportGenerator)
+    mock_generator.get_reporting_units.side_effect = lambda c: [{"cluster": c, "nodes": {"primary": "node-01", "standbys": []}}]
     mock_generator.pg_conn = None
     mock_generator.test_connection.return_value = True
     mock_generator.create_report.return_value = 'report-123'
@@ -324,6 +331,7 @@ def test_main_uses_explicit_project_name() -> None:
     ]
 
     mock_generator = MagicMock(spec=PostgresReportGenerator)
+    mock_generator.get_reporting_units.side_effect = lambda c: [{"cluster": c, "nodes": {"primary": "node-01", "standbys": []}}]
     mock_generator.pg_conn = None
     mock_generator.test_connection.return_value = True
     mock_generator.create_report.return_value = 'report-123'
@@ -379,6 +387,7 @@ def test_main_generates_specific_check_types(check_id: str, method_name: str) ->
     ]
 
     mock_generator = MagicMock(spec=PostgresReportGenerator)
+    mock_generator.get_reporting_units.side_effect = lambda c: [{"cluster": c, "nodes": {"primary": "node-01", "standbys": []}}]
     mock_generator.pg_conn = None
     mock_generator.test_connection.return_value = True
     mock_generator.get_all_clusters.return_value = ['local']
@@ -413,6 +422,7 @@ def test_main_with_check_id_d004_generates_from_a003() -> None:
     ]
 
     mock_generator = MagicMock(spec=PostgresReportGenerator)
+    mock_generator.get_reporting_units.side_effect = lambda c: [{"cluster": c, "nodes": {"primary": "node-01", "standbys": []}}]
     mock_generator.pg_conn = None
     mock_generator.test_connection.return_value = True
     mock_generator.get_all_clusters.return_value = ['local']
@@ -452,6 +462,7 @@ def test_main_with_check_id_f001_generates_from_a003() -> None:
     ]
 
     mock_generator = MagicMock(spec=PostgresReportGenerator)
+    mock_generator.get_reporting_units.side_effect = lambda c: [{"cluster": c, "nodes": {"primary": "node-01", "standbys": []}}]
     mock_generator.pg_conn = None
     mock_generator.test_connection.return_value = True
     mock_generator.get_all_clusters.return_value = ['local']
@@ -491,6 +502,7 @@ def test_main_with_check_id_g001_generates_from_a003() -> None:
     ]
 
     mock_generator = MagicMock(spec=PostgresReportGenerator)
+    mock_generator.get_reporting_units.side_effect = lambda c: [{"cluster": c, "nodes": {"primary": "node-01", "standbys": []}}]
     mock_generator.pg_conn = None
     mock_generator.test_connection.return_value = True
     mock_generator.get_all_clusters.return_value = ['local']
@@ -532,6 +544,7 @@ def test_main_never_uploads_the_local_fallback(clusters, uploads, tmp_path, monk
         '--project-name', 'p1',
     ]
     mock_generator = MagicMock(spec=PostgresReportGenerator)
+    mock_generator.get_reporting_units.side_effect = lambda c: [{"cluster": c, "nodes": {"primary": "node-01", "standbys": []}}]
     mock_generator.pg_conn = None
     mock_generator.test_connection.return_value = True
     mock_generator.get_all_clusters.return_value = clusters

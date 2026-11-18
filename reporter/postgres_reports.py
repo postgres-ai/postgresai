@@ -52,6 +52,7 @@ import argparse
 import sys
 import os
 from pathlib import Path
+from urllib.parse import quote
 try:
     import psycopg2
     import psycopg2.extras
@@ -237,6 +238,38 @@ def _one_line(text: str, limit: int) -> str:
 # dropped, so H001/H002/H004 must never recommend removing them (#345).
 _SYSTEM_SCHEMAS = frozenset({"pg_catalog", "information_schema", "pg_toast"})
 _SYSTEM_TEMP_SCHEMA_RE = re.compile(r"^pg_(toast_)?temp_")
+
+
+# Why a report has no data, in words for its reader (UAT 2026-10-01: an empty
+# `data: {}` said nothing). An empty node result gets `available` and `reason`.
+# `available: false`: the report cannot tell "nothing found" from "not collected
+# yet" or "the query failed". `available: true`: the check's source metric had
+# rows for the node and the report kept none of them; the generator passes that
+# evidence as `collected=True`.
+_QUERY_STATS_REASON = (
+    "No query statistics in the window. The monitoring records a query from pg_stat_statements once it has "
+    "run at least 3 times and for 1 s in total, so an idle or newly connected database has none yet."
+)
+EMPTY_REPORT_REASONS = {
+    **{check_id: _QUERY_STATS_REASON for check_id in ("K001", "K003", "K004", "K005", "K006", "K007", "K008", "M001", "M002", "M003")},
+    "N001": "No active-session samples in the window: no session was active when sampled, or the collection has not run yet.",
+    # initdb writes non-default settings, so a server always has some: none means none collected.
+    "A007": "No settings in the collected metrics: the collection has not run yet, or the metrics query failed.",
+    # The metrics below have a row only for what they find, so no row is also what "nothing found" looks like.
+    "F004": "No table bloat estimate in the collected metrics: no table is larger than 1 MiB, the collection has not run yet, or the metrics query failed.",
+    "F005": "No index bloat estimate in the collected metrics: no B-tree index is larger than 1 MiB, the collection has not run yet, or the metrics query failed.",
+    "H001": "No invalid index in the collected metrics: there is none, the collection has not run yet, or the metrics query failed.",
+    "H002": "No unused index in the collected metrics: there is none, the collection has not run yet, or the metrics query failed.",
+    "H004": "No redundant index in the collected metrics: there is none, the collection has not run yet, or the metrics query failed.",
+}
+_DEFAULT_EMPTY_REASON = "No data for this check in the collected metrics yet."
+# The source metric had rows for the node, and the report dropped them all (system-schema indexes).
+# F004/F005 keep every row they read, so for them rows always mean data.
+FOUND_NOTHING_REASONS = {
+    "H001": "No invalid indexes found in the collected metrics.",
+    "H002": "No unused indexes found in the collected metrics.",
+    "H004": "No redundant indexes found in the collected metrics.",
+}
 
 
 def is_system_schema(name: Any) -> bool:
@@ -1615,6 +1648,7 @@ class PostgresReportGenerator:
                 database_sizes[db_name] = size_bytes
 
         invalid_indexes_by_db = {}
+        collected = False  # the source metric had rows for this node
         for db_name in databases:
             # Fetch index definitions from the sink for this database (used to aid remediation)
             index_definitions = self.get_index_definitions_from_sink(db_name)
@@ -1632,6 +1666,7 @@ class PostgresReportGenerator:
             indexes_data: Dict[tuple, Dict[str, Any]] = {}
 
             if size_result.get('status') == 'success' and size_result.get('data', {}).get('result'):
+                collected = True
                 for item in size_result['data']['result']:
                     schema_name = item['metric'].get('schema_name', 'unknown')
                     table_name = item['metric'].get('table_name', 'unknown')
@@ -1729,6 +1764,7 @@ class PostgresReportGenerator:
             invalid_indexes_by_db,
             node_name,
             postgres_version=self._get_postgres_version_info(cluster, node_name),
+            collected=collected,
         )
 
     # H002 window: 0 scans in every monitored reading over the lookback (protocols
@@ -1856,6 +1892,7 @@ class PostgresReportGenerator:
                 postmaster_startup_time = datetime.fromtimestamp(postmaster_startup_epoch).isoformat()
 
         unused_indexes_by_db = {}
+        collected = False  # the source metric had rows for this node
         for db_name in databases:
             # Get index definitions from Postgres sink database for this specific database
             index_definitions = self.get_index_definitions_from_sink(db_name)
@@ -1890,6 +1927,7 @@ class PostgresReportGenerator:
 
             unused_indexes = []
             if unused_result.get('status') == 'success' and unused_result.get('data', {}).get('result'):
+                collected = True
                 for item in unused_result['data']['result']:
                     schema_name = item['metric'].get('schema_name', 'unknown')
                     table_name = item['metric'].get('table_name', 'unknown')
@@ -1970,6 +2008,7 @@ class PostgresReportGenerator:
             unused_indexes_by_db,
             node_name,
             postgres_version=self._get_postgres_version_info(cluster, node_name),
+            collected=collected,
         )
 
     # H004 readings: the scan counter of each candidate at its first monitored reading in the
@@ -2110,6 +2149,7 @@ class PostgresReportGenerator:
                 database_sizes[db_name] = size_bytes
 
         redundant_indexes_by_db = {}
+        collected = False  # the source metric had rows for this node
         for db_name in databases:
             # Fetch index definitions from the sink for this database (used to aid remediation)
             index_definitions = self.get_index_definitions_from_sink(db_name)
@@ -2135,6 +2175,7 @@ class PostgresReportGenerator:
             real_db = db_name
 
             if candidates:
+                collected = True
                 for item in candidates:
                     schema_name = item['metric'].get('schema_name', 'unknown')
                     table_name = item['metric'].get('table_name', 'unknown')
@@ -2252,6 +2293,7 @@ class PostgresReportGenerator:
             redundant_indexes_by_db,
             node_name,
             postgres_version=self._get_postgres_version_info(cluster, node_name),
+            collected=collected,
         )
 
     def generate_d004_pgstat_settings_report(self, cluster: str = "local", node_name: str = "node-01") -> Dict[
@@ -5993,7 +6035,8 @@ class PostgresReportGenerator:
 
     def format_report_data(self, check_id: str, data: Dict[str, Any], host: str = "target-database",
                           all_hosts: Dict[str, List[str]] = None,
-                          postgres_version: Dict[str, str] = None) -> Dict[str, Any]:
+                          postgres_version: Dict[str, str] = None,
+                          collected: bool = False) -> Dict[str, Any]:
         """
         Format data to match template structure.
 
@@ -6003,6 +6046,8 @@ class PostgresReportGenerator:
             host: Primary host identifier (used if all_hosts not provided)
             all_hosts: Optional dict with 'primary' and 'standbys' keys for multi-node reports
             postgres_version: Optional Postgres version info to include at report level
+            collected: The check's source metric had rows for the node. Only then does an
+                empty report say "nothing found" (`available: true`).
 
         Returns:
             Dictionary formatted for templates
@@ -6031,6 +6076,15 @@ class PostgresReportGenerator:
             if postgres_version:
                 node_result["postgres_version"] = postgres_version
             results = {host: node_result}
+
+        for node_result in results.values():
+            # A node result taken from a per-node report keeps the annotation it got there.
+            if isinstance(node_result, dict) and not node_result.get("data") and "available" not in node_result:
+                if collected and check_id in FOUND_NOTHING_REASONS:
+                    node_result["available"], node_result["reason"] = True, FOUND_NOTHING_REASONS[check_id]
+                else:
+                    node_result["available"] = False
+                    node_result["reason"] = EMPTY_REPORT_REASONS.get(check_id, _DEFAULT_EMPTY_REASON)
 
         template_data = {
             "contract_version": CONTRACT_VERSION,
@@ -6460,7 +6514,8 @@ class PostgresReportGenerator:
         }
         return descriptions.get(metric_name, '')
 
-    def generate_all_reports(self, cluster: str = "local", node_name: str = None, combine_nodes: bool = True) -> Dict[str, Any]:
+    def generate_all_reports(self, cluster: str = "local", node_name: str = None, combine_nodes: bool = True,
+                             reporting_nodes: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Generate all reports.
 
@@ -6468,6 +6523,7 @@ class PostgresReportGenerator:
             cluster: Cluster name
             node_name: Node name (if None and combine_nodes=True, will query all nodes)
             combine_nodes: If True, combine primary and replica reports into single report
+            reporting_nodes: Nodes of one reporting unit, discovered before generation
 
         Returns:
             Dictionary containing all reports
@@ -6477,7 +6533,7 @@ class PostgresReportGenerator:
         # Determine which nodes to process
         if combine_nodes and node_name is None:
             # Get all nodes and combine them
-            all_nodes = self.get_all_nodes(cluster)
+            all_nodes = reporting_nodes if reporting_nodes is not None else self.get_all_nodes(cluster)
             nodes_to_process = []
             if all_nodes["primary"]:
                 nodes_to_process.append(all_nodes["primary"])
@@ -6888,7 +6944,9 @@ class PostgresReportGenerator:
                                  include_cluster_prefix: bool = True,
                                  api_url: str = None,
                                  token: str = None,
-                                 report_id: str = None) -> List[Dict[str, Any]]:
+                                 report_id: str = None,
+                                 reporting_nodes: Optional[Dict[str, Any]] = None,
+                                 report_cluster: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Generate individual JSON files for each query mentioned in hourly reports.
         Fetches all metrics directly from Prometheus (matching Dashboard 3).
@@ -6901,6 +6959,8 @@ class PostgresReportGenerator:
             hours: Number of hours for metric aggregation (default: 24)
             write_immediately: If True, write files immediately to reduce memory usage
             include_cluster_prefix: If True, prefix per-query filenames with "<cluster>_".
+            reporting_nodes: Nodes of one reporting unit; no second topology discovery
+            report_cluster: Output identity of that unit; cluster remains the metric label
             api_url: API URL for uploads (only used if write_immediately is True)
             token: API token for uploads (only used if write_immediately is True)
             report_id: Report ID for uploads (only used if write_immediately is True)
@@ -6919,7 +6979,7 @@ class PostgresReportGenerator:
 
         # Determine which nodes to include (match generate_all_reports logic)
         if node_name is None:
-            nodes = self.get_all_nodes(cluster)
+            nodes = reporting_nodes if reporting_nodes is not None else self.get_all_nodes(cluster)
             nodes_to_process: List[str] = []
             if nodes.get("primary"):
                 nodes_to_process.append(nodes["primary"])
@@ -6939,8 +6999,18 @@ class PostgresReportGenerator:
         # prometheus (datname like 'target_database') and sink (dbname like 'target-database')
         db_names_list = list(queryids_by_db.keys())
         logger.info(f"Fetching query texts for {len(db_names_list)} database(s): {db_names_list}")
-        query_texts = self.get_queryid_queries_from_sink(query_text_limit, db_names=None,
+        query_texts = {}
+        if report_cluster is None or report_cluster == cluster:
+            query_texts = self.get_queryid_queries_from_sink(query_text_limit, db_names=None,
                                                          cluster=cluster, node_name=node_name)
+        else:
+            for n in nodes_to_process:
+                texts = self.get_queryid_queries_from_sink(query_text_limit, db_names=None,
+                                                         cluster=cluster, node_name=n)
+                for db, queries in texts.items():
+                    target = query_texts.setdefault(db, {})
+                    for qid, text in queries.items():
+                        target.setdefault(qid, text)
 
         query_files = []
         # Invert {db: set(queryid)} -> {queryid: set(db)}
@@ -6999,12 +7069,14 @@ class PostgresReportGenerator:
             # Create filename (match per-check report prefix logic)
             # - Single-cluster: query_<queryid>.json
             # - Multi-cluster:  <cluster>_query_<queryid>.json
-            filename = f"{cluster}_query_{queryid}.json" if include_cluster_prefix else f"query_{queryid}.json"
+            output_cluster = report_cluster if report_cluster is not None else cluster
+            prefix = quote(output_cluster, safe="") if output_cluster != cluster else cluster
+            filename = f"{prefix}_query_{queryid}.json" if include_cluster_prefix else f"query_{queryid}.json"
 
             # Build the final JSON object (keep timestamptz as the last field)
             now = datetime.now(timezone.utc).isoformat()
             query_data = {
-                "cluster_id": cluster,
+                "cluster_id": output_cluster,
                 "query_id": queryid,
                 "query_text": query_text,
                 "nodes": nodes,
@@ -7075,16 +7147,16 @@ class PostgresReportGenerator:
 
         return sorted(list(cluster_set))
 
-    def get_all_nodes(self, cluster: str = "local") -> Dict[str, List[str]]:
+    def get_reporting_units(self, cluster: str = "local") -> List[Dict[str, Any]]:
         """
-        Get all nodes (primary and replicas) from the metrics.
+        Group each confirmed primary with its physical standbys.
         Uses pgwatch_db_stats_in_recovery_int to determine primary vs standby.
 
         Args:
             cluster: Cluster name
 
         Returns:
-            Dictionary with 'primary' and 'standbys' keys containing node names
+            Reporting names and node blocks; metric queries still use the original cluster
         """
         _esc = self._escape_promql_label
         # Query for all nodes in the cluster using last_over_time
@@ -7111,6 +7183,8 @@ class PostgresReportGenerator:
         # Use pgwatch_db_stats_in_recovery_int to determine primary vs standby
         # in_recovery = 0 means primary, in_recovery = 1 means standby
         unknown_nodes = []
+        primaries = []
+        system_ids = {}
         for node_name in node_list:
             recovery_query = f'last_over_time(pgwatch_db_stats_in_recovery_int{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
             recovery_result = self.query_instant(recovery_query)
@@ -7119,6 +7193,12 @@ class PostgresReportGenerator:
                 unknown_nodes.append(node_name)
                 continue
 
+            rows = recovery_result['data']['result']
+            # pgai-mon labels these rows with pg_control_system()'s system identifier.
+            # Keep it as text: converting a 64-bit identifier to float loses bits.
+            ids = {row.get('metric', {}).get('sys_id') for row in rows}
+            if len(ids) == 1 and next(iter(ids)):
+                system_ids[node_name] = next(iter(ids))
             in_recovery_value = float(recovery_result['data']['result'][0]['value'][1])
             is_standby = (in_recovery_value > 0)
             logger.info(f"Node '{node_name}': in_recovery={int(in_recovery_value)} ({'standby' if is_standby else 'primary'})")
@@ -7126,15 +7206,9 @@ class PostgresReportGenerator:
             if is_standby:
                 nodes["standbys"].append(node_name)
             else:
-                # First confirmed primary wins over any unknown role.
+                primaries.append(node_name)
                 if nodes["primary"] is None:
                     nodes["primary"] = node_name
-                else:
-                    logger.warning(
-                        f"Multiple primary nodes detected in cluster '{cluster}'; "
-                        f"omitting '{node_name}' from this report, not listing it as a standby. "
-                        "Assign unrelated nodes separate clusters with mon targets add --cluster <name> "
-                        "(custom_tags.cluster in instances.yml for existing targets).")
 
         if unknown_nodes:
             logger.warning(f"Nodes with unknown roles in cluster '{cluster}' (no recovery data): {unknown_nodes}")
@@ -7146,8 +7220,33 @@ class PostgresReportGenerator:
                     nodes["standbys"].append(node_name)
             nodes["standbys"].sort()
 
-        logger.info(f"Result: primary={nodes['primary']}, replicas={nodes['standbys']}")
-        return nodes
+        if len(primaries) <= 1:
+            logger.info(f"Result: primary={nodes['primary']}, replicas={nodes['standbys']}")
+            return [{"cluster": cluster, "nodes": nodes}]
+
+        units = [{"cluster": f"{cluster}/{primary}",
+                  "nodes": {"primary": primary, "standbys": []}} for primary in primaries]
+        unassigned = []
+        for standby in nodes["standbys"]:
+            matches = [unit for unit in units
+                       if standby not in unknown_nodes and system_ids.get(standby)
+                       and system_ids.get(unit["nodes"]["primary"]) == system_ids[standby]]
+            if len(matches) == 1:
+                matches[0]["nodes"]["standbys"].append(standby)
+            else:
+                units[0]["nodes"]["standbys"].append(standby)
+                unassigned.append(standby)
+        logger.warning(
+            f"Multiple primary nodes detected in cluster '{cluster}': {primaries}; "
+            f"generating one report per primary. Nodes without a unique primary assignment: {unassigned}; "
+            f"keeping them with first primary '{primaries[0]}'. "
+            "Assign unrelated nodes separate clusters with mon targets add --cluster <name> "
+            "(custom_tags.cluster in instances.yml for existing targets).")
+        return units
+
+    def get_all_nodes(self, cluster: str = "local") -> Dict[str, Any]:
+        """Nodes of the first reporting unit, for callers generating a single report."""
+        return self.get_reporting_units(cluster)[0]["nodes"]
 
     def get_all_databases(self, cluster: str = "local", node_name: str = "node-01") -> List[str]:
         """
@@ -7549,10 +7648,19 @@ def main():
             else:
                 logger.info(f"Discovered clusters: {clusters_to_process}")
 
-        # Process each cluster
+        reporting_units = []
         for cluster in clusters_to_process:
+            if args.check_id in (None, 'ALL') and not args.no_combine_nodes and args.node_name is None:
+                units = generator.get_reporting_units(cluster)
+                reporting_units.extend((cluster, unit["cluster"], unit["nodes"]) for unit in units)
+            else:
+                reporting_units.append((cluster, cluster, None))
+
+        # Keep the metric label separate from the reporting unit's output name.
+        for cluster, report_cluster, reporting_nodes in reporting_units:
             logger.info("=" * 60)
-            logger.info(f"Processing cluster: {cluster}")
+            logger.info(f"Processing reporting unit: {report_cluster}")
+            file_prefix = quote(report_cluster, safe="") if report_cluster != cluster else cluster
             logger.info("=" * 60)
 
             # Set default node_name if not provided and not combining nodes
@@ -7578,7 +7686,8 @@ def main():
                             logger.info(f"Skipping API uploads for cluster {cluster}")
 
                 try:
-                    reports = generator.generate_all_reports(cluster, args.node_name, combine_nodes)
+                    reports = generator.generate_all_reports(cluster, args.node_name, combine_nodes,
+                                                             reporting_nodes=reporting_nodes)
 
                     # Generate per-query JSON files BEFORE deleting reports (needs queryids from reports)
                     # Use write_immediately=True to avoid accumulating all data in memory
@@ -7588,7 +7697,8 @@ def main():
                         # 640 KB should be enough for anybody
                         query_text_limit=66560, hours=24,
                         write_immediately=True,
-                        include_cluster_prefix=(len(clusters_to_process) > 1),
+                        include_cluster_prefix=(len(reporting_units) > 1),
+                        reporting_nodes=reporting_nodes, report_cluster=report_cluster,
                         api_url=args.api_url if (not args.no_upload and report_id) else None,
                         token=args.token if (not args.no_upload and report_id) else None,
                         report_id=report_id if (not args.no_upload and report_id) else None
@@ -7600,7 +7710,7 @@ def main():
 
                     # Save reports with cluster name prefix
                     for report_key in list(reports.keys()):  # Use list() to avoid dict modification during iteration
-                        output_filename = f"{cluster}_{report_key}.json" if len(clusters_to_process) > 1 else f"{report_key}.json"
+                        output_filename = f"{file_prefix}_{report_key}.json" if len(reporting_units) > 1 else f"{report_key}.json"
                         with open(output_filename, "w") as f:
                             json.dump(reports[report_key], f, indent=2)
                         logger.info(f"Generated report: {output_filename}")
