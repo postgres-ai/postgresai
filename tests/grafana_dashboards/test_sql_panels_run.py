@@ -100,7 +100,7 @@ def _free_port():
 
 
 @pytest.fixture(scope="module")
-def pgai_mon(tmp_path_factory):
+def pgai_mon(tmp_path_factory, request):
     binary = os.environ.get("PGAI_MON_BIN")
     if not binary:
         # CI builds the binary (mon:build) for this test: a missing one is an error there.
@@ -108,8 +108,15 @@ def pgai_mon(tmp_path_factory):
             "PGAI_MON_BIN is not set (path to a built pgai-mon)")
     store = tmp_path_factory.mktemp("panel_store") / "store"
     with gzip.open(FIXTURE, "rb") as src:
-        subprocess.run([binary, "load", "--store", str(store), "--input", "-"], input=src.read(),
-                       check=True, capture_output=True, timeout=300)
+        data = src.read()
+    if getattr(request, "param", None) == "slow":
+        series = [json.loads(line) for line in data.splitlines()]
+        series = [s for s in series if "bloat" in s["metric"]["__name__"]]
+        for s in series:
+            s.update(timestamps=[FIXTURE_END_MS - 5_400_000], values=[s["values"][-1]])
+        data = "".join(json.dumps(s) + "\n" for s in series).encode()
+    subprocess.run([binary, "load", "--store", str(store), "--input", "-"], input=data,
+                   check=True, capture_output=True, timeout=300)
     port = _free_port()
     log = open(store.parent / "serve.log", "wb")
     proc = subprocess.Popen(
@@ -227,3 +234,22 @@ def test_ash_group_names_preserve_sparse_instance_normalization(pgai_mon):
     assert [(r["time"], r["value"], r["series"]) for r in result["rows"]] == [
         (0, 0.5, "IO"), (10, 3.0, "IO"), (20, 0.0, "IO"),
     ]
+
+
+@pytest.mark.parametrize("pgai_mon", ["slow"], indirect=True)
+@pytest.mark.parametrize("dashboard,panel_id", [(8, 8), (8, 2), (9, 33), (9, 32), (10, 2), (10, 22)])
+def test_slow_bloat_chart_has_last_run_on_short_range(pgai_mon, dashboard, panel_id):
+    path = next((REPO_ROOT / "mon/grafana/dashboards").glob(f"Dashboard_{dashboard}_*.json"))
+    panel = next(p for p in CP.walk(json.loads(path.read_text())["panels"]) if p.get("id") == panel_id)
+    target = next(t for t in panel["targets"] if t["refId"] == "A")
+    variables = {k: [v] for k, v in dict(
+        cluster_name="local", node_name="node-01", db_name="target_database",
+        datname="target_database", schema_name="app", table_name="t119",
+        index_name="t119_unused", top_n="10",
+    ).items()}
+    sql, left = CP.interpolate(target["url_options"]["data"], variables,
+                               CP.builtin_vars(FIXTURE_END_MS - 3_600_000, FIXTURE_END_MS, 30_000))
+    assert not left
+    result = CP.post(pgai_mon, sql)
+    assert "error" not in result, result
+    assert result["rows"], f"D{dashboard:02d} {panel_id}A is empty with a 90-minute-old sample"

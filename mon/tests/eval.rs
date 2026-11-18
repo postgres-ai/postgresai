@@ -27,6 +27,7 @@ fn kernel_counter_reset_is_removed() {
         end: 1_120_000,
         step: 300_000,
         window: 150_000,
+        interval: 0,
         phi: 0.0,
     };
     let r = run(Func::Increase, g, &ts, &v);
@@ -44,6 +45,7 @@ fn kernel_gap_longer_than_window_and_single_sample() {
         end: 300_000,
         step: 60_000,
         window: 60_000,
+        interval: 0,
         phi: 0.0,
     };
     assert!(run(Func::Irate, g, &ts, &v).is_empty(), "nothing in (240s, 300s]");
@@ -1342,6 +1344,7 @@ fn an_object_store_copy_reads_exactly_like_the_local_store() {
         end: day0 + 70 * h,
         step: h,
         window: 6 * h,
+        interval: 0,
         phi: 0.0,
     };
     let ru = |c: &EvalCtx| {
@@ -1893,4 +1896,350 @@ fn pgai_samples_matches_the_samples_view() {
     assert!(total > 100_000, "{total}");
     assert_ne!(marks, vec!["[0,0]".to_string()]);
     assert!(r.run("SELECT * FROM pgai_samples('r_total', [], 10, 5)").is_err());
+}
+
+#[test]
+fn slow_last_floor_instant_with_two_samples() {
+    let minute = 60_000;
+    let end = 20_000_000;
+    let g = Grid {
+        start: end,
+        end,
+        step: 5 * minute,
+        window: 0,
+        interval: 120 * minute,
+        phi: 0.0,
+    };
+    let ts = [end - 130 * minute, end - 10 * minute];
+    assert!(g.fetch_start(Func::Last) <= ts[0]);
+    assert_eq!(run(Func::Last, g, &ts, &[1.0, 42.0]), vec![(end, 42.0)]);
+}
+
+#[test]
+fn slow_last_floor_range_with_irregular_samples() {
+    let minute = 60_000;
+    let end = 20_000_000;
+    let g = Grid {
+        start: end - 60 * minute,
+        end,
+        step: minute,
+        window: 0,
+        interval: 120 * minute,
+        phi: 0.0,
+    };
+    let ts = [end - 100 * minute, end - 90 * minute];
+    let expected: Vec<_> = (0..g.points()).map(|i| (g.start + i as i64 * g.step, 42.0)).collect();
+    assert_eq!(run(Func::Last, g, &ts, &[1.0, 42.0]), expected);
+    let marked = run(
+        Func::Last,
+        g,
+        &[ts[0], ts[1], end - 30 * minute],
+        &[1.0, 42.0, stale_nan()],
+    );
+    assert_eq!(marked, expected[..30]);
+}
+
+#[test]
+fn slow_last_floor_range_expires() {
+    let minute = 60_000;
+    let end = 20_000_000;
+    let g = Grid {
+        start: end - 80 * minute,
+        end,
+        step: minute,
+        window: 0,
+        interval: 120 * minute,
+        phi: 0.0,
+    };
+    let ts = [end - 200 * minute, end - 190 * minute];
+    assert!(g.fetch_start(Func::Last) <= ts[0]);
+    let expected: Vec<_> = (0..25).map(|i| (g.start + i * minute, 42.0)).collect();
+    assert_eq!(run(Func::Last, g, &ts, &[1.0, 42.0]), expected);
+}
+
+#[test]
+fn slow_last_kernel_preserves_bounds_and_other_selectors() {
+    let end = 20_000_000;
+    let g = Grid {
+        start: end - 3_600_000,
+        end,
+        step: 30_000,
+        window: 0,
+        interval: 7_200_000,
+        phi: 0.0,
+    };
+    let ts = end - 5_400_000;
+    assert!(g.fetch_start(Func::Last) <= ts);
+    let expected: Vec<_> = (0..g.points()).map(|i| (g.start + i as i64 * g.step, 42.0)).collect();
+    assert_eq!(run(Func::Last, g, &[ts], &[42.0]), expected);
+    let instant = Grid {
+        start: end,
+        step: 300_000,
+        ..g
+    };
+    assert_eq!(run(Func::Last, instant, &[ts], &[42.0]), vec![(end, 42.0)]);
+    for age in [8_100_000, 8_100_001] {
+        assert!(run(Func::Last, instant, &[end - age], &[42.0]).is_empty());
+        assert!(run(Func::Last, g, &[g.start - age], &[42.0]).is_empty());
+    }
+    assert_eq!(
+        run(Func::Last, instant, &[end - 8_100_000 + 1], &[42.0]),
+        vec![(end, 42.0)]
+    );
+    let marked = run(Func::Last, g, &[ts, end - 1_800_000], &[42.0, stale_nan()]);
+    assert!(!marked.is_empty());
+    assert!(marked.iter().all(|(t, _)| *t < end - 1_800_000));
+    assert!(run(Func::Last, instant, &[ts, end - 1_800_000], &[42.0, stale_nan()]).is_empty());
+    for interval in [0, 30_000, 300_000] {
+        let fast = Grid { interval, ..instant };
+        assert!(run(Func::Last, fast, &[end - 600_000], &[42.0]).is_empty());
+        assert_eq!(fast.fetch_start(Func::Last), end - 600_000);
+    }
+    let dense_ts = [end - 630_000, end - 600_000];
+    for grid in [g, instant] {
+        for interval in [30_000, 300_000] {
+            assert_eq!(
+                run(Func::Last, Grid { interval, ..grid }, &dense_ts, &[1.0, 2.0]),
+                run(Func::Last, Grid { interval: 0, ..grid }, &dense_ts, &[1.0, 2.0])
+            );
+        }
+    }
+    // A longer observed cadence still wins over the dictionary floor.
+    assert_eq!(
+        run(Func::Last, g, &[end - 400 * 60_000, end - 150 * 60_000], &[1.0, 42.0]),
+        expected
+    );
+    assert!(run(
+        Func::LastOverTime,
+        Grid {
+            window: 3_600_000,
+            ..instant
+        },
+        &[ts],
+        &[42.0]
+    )
+    .is_empty());
+    assert!(run(
+        Func::Last,
+        Grid {
+            window: 3_600_000,
+            ..instant
+        },
+        &[ts],
+        &[42.0]
+    )
+    .is_empty());
+}
+
+#[test]
+fn slow_last_dictionary_matches_longest_metric_prefix() {
+    use pgai_mon::query::DictEntry;
+    let mut ctx = pgai_mon::eval::EvalCtx::from_catalog(Default::default(), &Default::default());
+    let entry = |prefix: &str, interval_s| DictEntry {
+        group: prefix.into(),
+        prefix: prefix.into(),
+        interval_s,
+        instance_level: false,
+        gauges: vec![],
+        description: String::new(),
+    };
+    ctx.dict = vec![
+        entry("pgwatch_slow", Some(7200)),
+        entry("pgwatch_slow_fast", Some(30)),
+        entry("pgwatch_slow_unknown", None),
+        entry("pgwatch_threshold", Some(300)),
+        entry("pgwatch_above", Some(301)),
+    ];
+    for (metric, expected) in [
+        ("pgwatch_slow", 7_200_000),
+        ("pgwatch_slow_value", 7_200_000),
+        ("pgwatch_slow_fast_value", 0),
+        ("pgwatch_slow_unknown_value", 0),
+        ("pgwatch_slowish_value", 0),
+        ("missing", 0),
+        ("pgwatch_threshold", 0),
+        ("pgwatch_above", 301_000),
+    ] {
+        assert_eq!(ctx.interval(metric), expected, "{metric}");
+    }
+}
+
+#[test]
+fn slow_last_sql_paths_preserve_metric_intervals() {
+    let _guard = KNOBS.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = StoreCore::open(dir.path(), &StoreCfg::default()).unwrap();
+    // The only sample is on the previous day, outside a last-hour label selection.
+    let end = 1_794_009_600_000;
+    let end = end / DAY_MS * DAY_MS + 3_600_000;
+    let old = end - 5_400_000;
+    let mut defs = vec![];
+    let mut samples = vec![];
+    let mut dict = vec![];
+    for (metric, interval, times) in [
+        ("slow_value", 7200, vec![old]),
+        ("fast_value", 30, vec![end - 600_000]),
+        ("dense_value", 7200, vec![end - 630_000, end - 600_000]),
+        ("regular_value", 7200, vec![end - 130 * 60_000, end - 10 * 60_000]),
+        ("irregular_value", 7200, vec![end - 100 * 60_000, old]),
+        ("expiring_value", 7200, vec![end - 200 * 60_000, end - 190 * 60_000]),
+        ("stale_value", 7200, vec![old, end - 1_800_000]),
+        ("expired_value", 7200, vec![end - 3_600_000 - 8_100_001]),
+    ] {
+        let id = series_id(metric, &[]);
+        defs.push(SeriesDef {
+            series_id: id,
+            metric: metric.into(),
+            labels: vec![],
+            first_seen: times[0],
+        });
+        for (i, ts) in times.into_iter().enumerate() {
+            samples.push(Sample {
+                series_id: id,
+                ts,
+                value: if metric == "stale_value" && i == 1 {
+                    stale_nan()
+                } else {
+                    42.0
+                },
+            });
+        }
+        dict.push(pgai_mon::query::DictEntry {
+            group: metric.into(),
+            prefix: metric.into(),
+            interval_s: Some(interval),
+            instance_level: false,
+            gauges: vec!["*".into()],
+            description: String::new(),
+        });
+    }
+    core.append(Record::Series(defs)).unwrap();
+    core.append(Record::Samples(samples)).unwrap();
+    core.flush().unwrap();
+    let r = Reader::new(
+        core.shared.clone(),
+        HttpCfg::default(),
+        format!("{EMBEDDED_VIEWS_SQL}\n;\n{MACROS}"),
+        dict,
+    )
+    .unwrap();
+    let check = || {
+        // Four hour-aligned points exercise rollups and forced chunks after compaction.
+        let args = format!("'irregular_value', [], {}, {end}, 3600000", end - 10_800_000);
+        let expected: Vec<_> = [end - 3_600_000, end]
+            .map(|t| serde_json::json!([t, 42.0]).to_string())
+            .into();
+        for call in [
+            format!("prom_last({args})"),
+            format!("prom_agg('sum', 'last', {args}, 0)"),
+            format!("prom_topk(1, 'last', {args}, 0)"),
+        ] {
+            assert_eq!(
+                sql_rows(&r, &format!("SELECT t, value FROM {call} ORDER BY t")),
+                expected,
+                "{call}"
+            );
+        }
+        for (metric, first, until) in [
+            ("regular_value", end - 60 * 60_000, end + 1),
+            ("irregular_value", end - 60 * 60_000, end + 1),
+            ("dense_value", end - 10 * 60_000, end + 1),
+            ("expiring_value", end - 80 * 60_000, end - 55 * 60_000),
+            ("stale_value", end - 60 * 60_000, end - 30 * 60_000),
+        ] {
+            for start in [first, end] {
+                let args = format!("'{metric}', [], {start}, {end}, 60000");
+                let expected: Vec<_> = (start..=end)
+                    .step_by(60_000)
+                    .filter(|&t| t < until)
+                    .map(|t| serde_json::json!([t, 42.0]).to_string())
+                    .collect();
+                for call in [
+                    format!("prom_last({args})"),
+                    format!("prom_agg('sum', 'last', {args}, 0)"),
+                    format!("prom_topk(1, 'last', {args}, 0)"),
+                ] {
+                    assert_eq!(
+                        sql_rows(&r, &format!("SELECT t, value FROM {call} ORDER BY t")),
+                        expected,
+                        "{call}"
+                    );
+                }
+            }
+        }
+        for start in [end - 3_600_000, end] {
+            let args = format!("'slow_value', [], {start}, {end}, 300000");
+            let expected = sql_rows(&r, &format!("SELECT t, value FROM prom_last({args}) ORDER BY t"));
+            assert_eq!(expected.len(), ((end - start) / 300_000 + 1) as usize);
+            for call in [
+                format!("prom_agg('sum', 'last', {args}, 0)"),
+                format!("prom_topk(1, 'last', {args}, 0)"),
+            ] {
+                assert_eq!(
+                    sql_rows(&r, &format!("SELECT t, value FROM {call} ORDER BY t")),
+                    expected,
+                    "{call}"
+                );
+            }
+            let mixed_args = format!("'irregular_value', [], {start}, {end}, 300000");
+            for call in [format!("prom_topk(1, 'last', {mixed_args}, 0, p_den_metric := 'fast_value')"),
+                         format!("prom_topk_expr(1, 'last', [{{'m':'irregular_value','n':1}},{{'m':'fast_value','n':1}}], [], {start}, {end}, 300000, 0)")] {
+                let mixed = sql_rows(&r, &format!("SELECT t, value FROM {call} ORDER BY t"));
+                // The fast series has a value around its sample, but must expire on its own schedule.
+                assert_eq!(mixed.len(), if start < end { 2 } else { 0 }, "{call}");
+                assert!(sql_rows(&r, &format!("SELECT t FROM {call} WHERE t = {end}")).is_empty(), "{call}");
+            }
+        }
+        for metric in ["fast_value", "stale_value", "expired_value"] {
+            assert!(
+                sql_rows(
+                    &r,
+                    &format!("SELECT * FROM prom_last('{metric}', [], {end}, {end}, 300000)")
+                )
+                .is_empty(),
+                "{metric}"
+            );
+        }
+        assert!(sql_rows(
+            &r,
+            &format!("SELECT * FROM prom_last_over_time('slow_value', [], {end}, {end}, 300000, 3600000)")
+        )
+        .is_empty());
+        assert!(sql_rows(
+            &r,
+            &format!(
+                "SELECT * FROM pgai_samples('slow_value', [], {}, {end})",
+                end - 3_600_000
+            )
+        )
+        .is_empty());
+        assert!(sql_rows(
+            &r,
+            &format!(
+                "SELECT * FROM samples WHERE epoch_ms(ts) >= {} AND series_id = {}",
+                end - 3_600_000,
+                series_id("slow_value", &[])
+            )
+        )
+        .is_empty());
+    };
+    check();
+    std::env::set_var("PGAI_TOPK_CHUNK_ALWAYS", "1");
+    std::env::set_var("PGAI_TOPK_DEN_BUDGET", "64");
+    std::env::set_var("PGAI_TOPK_LEAN_ABOVE", "0");
+    check();
+    std::env::remove_var("PGAI_TOPK_CHUNK_ALWAYS");
+    std::env::remove_var("PGAI_TOPK_DEN_BUDGET");
+    std::env::remove_var("PGAI_TOPK_LEAN_ABOVE");
+    core.compactor().unwrap().run_once(now_ms(), true).unwrap();
+    let before = pgai_mon::eval::rollup::SERVED[0].load(std::sync::atomic::Ordering::Relaxed);
+    check();
+    assert!(pgai_mon::eval::rollup::SERVED[0].load(std::sync::atomic::Ordering::Relaxed) > before);
+    std::env::set_var("PGAI_TOPK_CHUNK_ALWAYS", "1");
+    std::env::set_var("PGAI_TOPK_DEN_BUDGET", "2");
+    std::env::set_var("PGAI_TOPK_LEAN_ABOVE", "0");
+    check();
+    std::env::remove_var("PGAI_TOPK_CHUNK_ALWAYS");
+    std::env::remove_var("PGAI_TOPK_DEN_BUDGET");
+    std::env::remove_var("PGAI_TOPK_LEAN_ABOVE");
 }

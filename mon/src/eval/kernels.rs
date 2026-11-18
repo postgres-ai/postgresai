@@ -91,6 +91,8 @@ pub struct Grid {
     pub end: i64,
     pub step: i64,
     pub window: i64,
+    /// Dictionary interval for a slow bare selector's lookback floor, in ms (0: disabled).
+    pub interval: i64,
     /// quantile_over_time's phi.
     pub phi: f64,
 }
@@ -102,7 +104,15 @@ impl Grid {
             let w = if self.window > 0 { self.window } else { self.step };
             return self.start - w.max(self.step);
         }
-        self.start - if f.silence() { 300_000 } else { 0 } - self.window.max(self.step)
+        let history = if f.silence() { 300_000 } else { 0 } + self.window.max(self.step);
+        self.start.saturating_sub(history.max(self.last_lookback(f)))
+    }
+    pub fn last_lookback(&self, f: Func) -> i64 {
+        if f == Func::Last && self.window == 0 && self.interval > 300_000 {
+            max_prev(self.interval)
+        } else {
+            0
+        }
     }
     pub fn points(&self) -> usize {
         if self.end < self.start || self.step <= 0 {
@@ -126,7 +136,7 @@ pub fn max_prev(si: i64) -> i64 {
     } else if si <= 32000 {
         si + si / 4
     } else {
-        si + si / 8
+        si.saturating_add(si / 8)
     }
 }
 
@@ -209,7 +219,8 @@ pub fn eval_prepared(
         max_prev(si.unwrap_or(g.step))
     } else {
         g.step
-    };
+    }
+    .max(g.last_lookback(f));
     let w = if g.window > 0 {
         g.window
     } else if f.adjust() && g.step < maxprev {

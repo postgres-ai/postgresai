@@ -151,6 +151,14 @@ client ─► POST /sql ─► auth ─► result cache ─► admission ─► 
    catalog (no directory listing) and re-points them when the catalog generation changes. The
    public views are in `schema/views.sql`. The `prom_*` macros call Rust table functions that
    read the Parquet files directly, one series at a time, and use rollups for closed days.
+   Bare selectors normally infer lookback from fetched samples. For dictionary intervals above
+   300 s, the fetch reaches back at least that interval plus 12.5%. Values stay current for at
+   least the same interval plus margin in instant and range queries, even with irregular sample
+   spacing. Longer estimated lookbacks, fast metrics, explicit windows and raw SQL keep their
+   existing behavior. The dictionary uses
+   the longest matching metric prefix and the maximum interval across sources. Staleness markers
+   end a series; native target removal does not yet write them, so slow series can remain visible
+   for up to the longer lookback after removal.
 6. **Limits.** See the table.
 
 | Limit | Config key | Default | When reached |

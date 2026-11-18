@@ -895,6 +895,7 @@ impl Reader {
         }
         let mut ctx = crate::eval::EvalCtx::from_catalog(self.shared.root.clone(), &cat);
         ctx.generation = g;
+        ctx.dict = self.dict.clone();
         *self.eval.write().unwrap() = Arc::new(ctx);
         // a failed mirror download is retried by the next refresh
         if ms.error.is_none() {

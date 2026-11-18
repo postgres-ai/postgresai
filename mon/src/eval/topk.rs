@@ -25,6 +25,8 @@ pub struct Bind {
     k: usize,
     f: Func,
     grid: Grid,
+    /// Separate fetch windows and lookback floors for mixed-metric bare selectors.
+    metric_grids: Vec<(super::scan::IdList, Grid)>,
     num: super::scan::IdList,
     den: Option<super::scan::IdList>,
     bottom: bool,
@@ -497,20 +499,35 @@ fn time_chunks(
         return Ok(whole);
     }
     // exact per-series scrape intervals over the whole grid's fetched range
-    let si = super::rollup::si_map(
-        &b.ctx,
-        ids,
-        b.grid.fetch_start(b.f),
-        b.grid.end,
-        CHUNK_DAYS,
-        b.f.keep_stale(),
-    )?;
+    let mut si = HashMap::new();
+    if b.metric_grids.is_empty() {
+        si = super::rollup::si_map(
+            &b.ctx,
+            ids,
+            b.grid.fetch_start(b.f),
+            b.grid.end,
+            CHUNK_DAYS,
+            b.f.keep_stale(),
+        )?;
+    } else {
+        for (ids, g) in &b.metric_grids {
+            si.extend(super::rollup::si_map(
+                &b.ctx,
+                ids,
+                g.fetch_start(b.f),
+                g.end,
+                CHUNK_DAYS,
+                b.f.keep_stale(),
+            )?);
+        }
+    }
     let maxprev = si
         .values()
         .map(|s| super::kernels::max_prev(*s))
         .max()
         .unwrap_or(0)
-        .max(super::kernels::max_prev(b.grid.step));
+        .max(super::kernels::max_prev(b.grid.step))
+        .max(b.grid.last_lookback(b.f));
     let per = (budget / row_bytes.max(1) / live.max(1))
         .min((max_days * crate::model::DAY_MS / b.grid.step) as usize)
         .max(2);
@@ -559,6 +576,35 @@ fn src_of(src: &Option<ChunkPlan>, b: &Bind, g: &Grid) -> Option<ChunkSrc> {
     })
 }
 
+/// Mixed metrics must not inherit the slowest term's cadence or fetch window.
+fn metric_series(
+    b: &Bind,
+    g: &Grid,
+    ids: &super::scan::IdList,
+    src: Option<&ChunkSrc>,
+    mut each: impl FnMut(u64, &[f64]),
+) -> anyhow::Result<()> {
+    if b.metric_grids.is_empty() {
+        return chunk_series(&b.ctx, b.f, g, ids, src, each);
+    }
+    // Callers pass complete metrics: the numerator, denominator, or all expression terms.
+    for (mi, mg) in &b.metric_grids {
+        if mi.first().is_none_or(|id| ids.binary_search(id).is_err()) {
+            continue;
+        }
+        let g = Grid {
+            interval: mg.interval,
+            ..*g
+        };
+        let src = src.map(|s| ChunkSrc {
+            si: s.si.clone(),
+            from: s.from.max(mg.fetch_start(b.f)),
+        });
+        chunk_series(&b.ctx, b.f, &g, mi, src.as_ref(), &mut each)?;
+    }
+    Ok(())
+}
+
 /// The values a top-k ranks, per numerator series: f(num), or f(num) / f(den) paired by `key`
 /// (same labels). Calls `each(id, offset, row)` with the row of steps offset.. (NaN = no point).
 /// Long grids, and ratios whose denominator rows would pass DEN_BUDGET, are evaluated in time
@@ -586,13 +632,13 @@ fn ratio_rows(
         let mut den: HashMap<u64, Sparse> = HashMap::new();
         let mut arena = DenRows::default();
         if ratio {
-            chunk_series(&b.ctx, b.f, &g, den_ids, s.as_ref(), |id, row| {
+            metric_series(b, &g, den_ids, s.as_ref(), |id, row| {
                 if let Some(k) = key(id) {
                     den.insert(k, arena.add(row));
                 }
             })?;
         }
-        chunk_series(&b.ctx, b.f, &g, &b.num, s.as_ref(), |id, row| {
+        metric_series(b, &g, &b.num, s.as_ref(), |id, row| {
             if !ratio {
                 return each(id, c0, row);
             }
@@ -717,7 +763,7 @@ fn expr_rows(
     for (c0, g) in chunks {
         let s = src_of(&src, b, &g);
         let mut acc = ExprAcc::new(g.points());
-        chunk_series(&b.ctx, b.f, &g, &e.all, s.as_ref(), |id, row| {
+        metric_series(b, &g, &e.all, s.as_ref(), |id, row| {
             if let Some(k) = key(id) {
                 acc.add(e, k, id, row)
             }
@@ -1040,11 +1086,12 @@ impl VTab for PromTopK {
         let f = Func::parse(&bind.get_parameter(1).to_string())?;
         let metric = bind.get_parameter(2).to_string();
         let matchers = bind.get_parameter(3).to_string();
-        let grid = Grid {
+        let mut grid = Grid {
             start: bind.get_parameter(4).to_int64(),
             end: bind.get_parameter(5).to_int64(),
             step: bind.get_parameter(6).to_int64(),
             window: bind.get_parameter(7).to_int64(),
+            interval: 0,
             phi: 0.0,
         };
         if grid.step <= 0 {
@@ -1091,6 +1138,10 @@ impl VTab for PromTopK {
                 return Err("prom_topk: a metric appears twice in terms (give it one n and d)".into());
             }
         }
+        let intervals: Vec<i64> = metrics.iter().map(|m| ctx.interval(m)).collect();
+        if f == Func::Last && grid.window == 0 {
+            grid.interval = intervals.iter().copied().max().unwrap_or(0);
+        }
         // Exact k-heaps with interned labels when the selection is small enough; the lean
         // two-phase path (ids only, labels for the finalists) for long windows under churn.
         let timing = std::env::var_os("PGAI_QUERY_TIMING").is_some();
@@ -1117,6 +1168,21 @@ impl VTab for PromTopK {
             let den = if has_den { Some(lean.ids_of(1)) } else { None };
             (None, HashMap::new(), lean, num, den)
         };
+        let metric_grids = if grid.interval > 0 && intervals.iter().any(|&i| i != grid.interval) {
+            intervals
+                .iter()
+                .enumerate()
+                .map(|(i, &interval)| {
+                    let ids = match &sel {
+                        Some(s) => s.ids(i).into(),
+                        None => lean.ids_of(i),
+                    };
+                    (ids, Grid { interval, ..grid })
+                })
+                .collect()
+        } else {
+            vec![]
+        };
         let expr = if terms.is_empty() {
             None
         } else {
@@ -1142,6 +1208,7 @@ impl VTab for PromTopK {
             k,
             f,
             grid,
+            metric_grids,
             num,
             den,
             bottom,

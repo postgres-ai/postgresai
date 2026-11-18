@@ -1752,7 +1752,7 @@ impl RollupStream {
         }
         let s = if let Some(m) = &self.si_fixed {
             m.get(&id).copied()
-        } else if self.g.start < self.g.end {
+        } else if self.g.start < self.g.end || self.g.last_lookback(self.f) > 0 {
             let (head, tail) = self.raw_split(use_raw, true);
             si_walk_by(&head, if use_ru { &self.buckets } else { &[] }, &tail, true)
         } else {

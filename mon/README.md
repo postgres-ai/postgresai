@@ -104,11 +104,13 @@ Conventions of the `prom_*` functions:
   time, ms) and `value`. `prom_agg` returns `labels`, `t`, `value`.
 - An instant query at time `T` is a range query with `start = end = T` and `step = 300000`.
 
-Bare selectors currently infer lookback from fetched samples, not `metric_dict.interval_s`.
-A slow job's only sample can fall outside that fetch window, leaving a short-range chart empty.
-Explicit `*_over_time` windows read historical samples; they do not provide the same staleness
-semantics as a bare selector. Native collector target removal does not yet write staleness
-markers, so extending lookback alone would keep removed targets visible for longer.
+Bare selectors for metrics collected more than 300 seconds apart fetch at least the dictionary interval
+(`metric_dict.interval_s`, the maximum across sources) plus 12.5%: 2 h 15 min for a two-hour job.
+The last value stays current for at least that interval plus margin, for instant and range queries,
+even when restarts or retries shorten the observed sample spacing. A longer estimated lookback
+still applies. Staleness markers still end a series. Explicit windows and raw SQL are
+unchanged. Native target removal does not yet write markers, so a removed target's slow-job
+series can remain visible for up to this lookback.
 
 | PromQL | SQL |
 |---|---|

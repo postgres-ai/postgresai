@@ -216,6 +216,7 @@ fn rollup_1h_month_tier_matches_the_day_files() {
         end: day0 + 35 * day,
         step: h,
         window: h,
+        interval: 0,
         phi: 0.0,
     };
     let plan = rollup::plan(&ctx, Func::Increase, &g).expect("rollup-served");

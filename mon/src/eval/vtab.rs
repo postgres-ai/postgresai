@@ -56,11 +56,12 @@ impl VTab for PromEval {
         let f = Func::parse(&bind.get_parameter(0).to_string())?;
         let metric = bind.get_parameter(1).to_string();
         let matchers = bind.get_parameter(2).to_string();
-        let grid = Grid {
+        let mut grid = Grid {
             start: bind.get_parameter(3).to_int64(),
             end: bind.get_parameter(4).to_int64(),
             step: bind.get_parameter(5).to_int64(),
             window: bind.get_parameter(6).to_int64(),
+            interval: 0,
             phi: bind.get_parameter(7).to_double(),
         };
         if f == Func::QuantileOverTime && !(0.0..=1.0).contains(&grid.phi) {
@@ -71,6 +72,7 @@ impl VTab for PromEval {
         }
         let handle = unsafe { &*bind.get_extra_info::<EvalHandle>() };
         let ctx = handle.read().unwrap().clone();
+        grid.interval = ctx.interval(&metric);
         let ids: super::scan::IdList =
             index::select_series(&ctx, &[&metric], &matchers, grid.fetch_start(f), grid.end)?
                 .ids(0)
@@ -221,15 +223,17 @@ impl VTab for PromSeries {
         let f = Func::parse(&bind.get_parameter(0).to_string())?;
         let metric = bind.get_parameter(1).to_string();
         let matchers = bind.get_parameter(2).to_string();
-        let grid = Grid {
+        let mut grid = Grid {
             start: bind.get_parameter(3).to_int64(),
             end: bind.get_parameter(4).to_int64(),
             step: bind.get_parameter(5).to_int64().max(1),
             window: bind.get_parameter(6).to_int64(),
+            interval: 0,
             phi: 0.0,
         };
         let handle = unsafe { &*bind.get_extra_info::<EvalHandle>() };
         let ctx = handle.read().unwrap().clone();
+        grid.interval = ctx.interval(&metric);
         let sel = index::select_series(&ctx, &[&metric], &matchers, grid.fetch_start(f), grid.end)?;
         let rows = sel.entries.iter().map(|e| (e.0, sel.json(&e.2))).collect();
         Ok(SeriesBind { rows })

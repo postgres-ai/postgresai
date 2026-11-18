@@ -21,6 +21,7 @@ use std::sync::{Arc, RwLock};
 /// There is no in-memory series index: each call reads the series files of its time window.
 pub struct EvalCtx {
     pub root: PathBuf,
+    pub dict: Vec<crate::query::DictEntry>,
     pub files: Vec<FileEntry>,
     /// Catalog generation and data epoch this context was built from; the newest sample's
     /// time and the closed-watermark lag (for the cache below the SQL layer, not built yet).
@@ -42,6 +43,17 @@ pub struct EvalCtx {
 }
 
 impl EvalCtx {
+    /// Match metric_dict: the most specific prefix wins, including fast/unknown intervals.
+    pub fn interval(&self, metric: &str) -> i64 {
+        self.dict
+            .iter()
+            .filter(|d| metric == d.prefix || metric.strip_prefix(&d.prefix).is_some_and(|s| s.starts_with('_')))
+            .max_by_key(|d| d.prefix.len())
+            .and_then(|d| d.interval_s)
+            .filter(|&s| s > 300)
+            .map_or(0, |s| s.saturating_mul(1000).min(i64::MAX as u64) as i64)
+    }
+
     /// The context for a catalog's files (the reader's view refresh; tests).
     pub fn from_catalog(root: PathBuf, c: &crate::catalog::Catalog) -> EvalCtx {
         let files = &c.files;
@@ -63,6 +75,7 @@ impl EvalCtx {
                 .cloned()
                 .collect(),
             tail_new: Default::default(),
+            dict: vec![],
             root,
             files: files
                 .iter()
@@ -91,6 +104,7 @@ pub type EvalHandle = Arc<RwLock<Arc<EvalCtx>>>;
 pub fn empty_handle(root: PathBuf) -> EvalHandle {
     Arc::new(RwLock::new(Arc::new(EvalCtx {
         root,
+        dict: vec![],
         files: vec![],
         generation: 0,
         data_epoch: 0,
