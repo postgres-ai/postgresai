@@ -22,6 +22,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -387,8 +388,14 @@ def test_ash_panel_identical_http_request_hits_cache(pgai_mon):
     assert len(list(csv.DictReader(io.StringIO(first.decode())))) > 0
 
 
-def test_ash_group_names_preserve_sparse_instance_normalization(pgai_mon):
+@pytest.mark.parametrize("budget,start,expected", [
+    (32000, 0, [(0, 0.5, "IO"), (10, 3.0, "IO"), (20, 0.0, "IO")]),
+    (4, 0, [(0, 1.75, "IO"), (20, 0.0, "IO")]),
+    (4, -10, [(-10, 1.75, "IO"), (20, 0.0, "IO")]),
+])
+def test_ash_group_names_preserve_sparse_instance_normalization(pgai_mon, budget, start, expected):
     sql = DC.case_sql({"sql_file": "sql/reports/dash/ash_by.sql"})
+    sql = sql.replace("32000::BIGINT", f"{budget}::BIGINT")
     # Feed the aggregation stage directly; evaluator bucket semantics have their own tests.
     for metric, relation in (("pgwatch_wait_events_total", "waits"), ("up", "up_rows")):
         sql, count = re.subn(
@@ -408,12 +415,10 @@ def test_ash_group_names_preserve_sparse_instance_normalization(pgai_mon):
     ), w AS ("""
     sql = sql.replace("WITH w AS (", inputs, 1)
     sql = DC.inline(sql, dict(by=["wait_event_type", "wait_event", "query_id"],
-                              start_ms=0, end_ms=30, step_ms=10), None)
+                              start_ms=start, end_ms=30, step_ms=10), None)
     result = CP.post(pgai_mon, DC.wrap(sql, ["labels", "t", "value"], "{{wait_event_type}}", [], ash=True))
     assert "error" not in result, result
-    assert [(r["time"], r["value"], r["__series"]) for r in result["rows"]] == [
-        (0, 0.5, "IO"), (10, 3.0, "IO"), (20, 0.0, "IO"),
-    ]
+    assert [(r["time"], r["value"], r["__series"]) for r in result["rows"]] == expected
 
 
 @pytest.mark.parametrize("pgai_mon", ["slow"], indirect=True)
@@ -433,3 +438,118 @@ def test_slow_bloat_chart_has_last_run_on_short_range(pgai_mon, dashboard, panel
     result = CP.post(pgai_mon, sql)
     assert "error" not in result, result
     assert result["rows"], f"D{dashboard:02d} {panel_id}A is empty with a 90-minute-old sample"
+
+
+ASH_BUDGET = 32_000
+
+
+def _ash_query(dashboard, panel_id, start, end, step, interval):
+    by = ["wait_event_type", "wait_event"] + (["query_id"] if panel_id == 3 else [])
+    selection = "query" if dashboard == 3 else "wet_we" if panel_id == 3 else "wet"
+    sql = DC.inline(DC.case_sql({"sql_file": "sql/reports/dash/ash_by.sql"}), dict(
+        by=by, filter=selection, cluster="local", node="node-01",
+        db_re="target_database", wet_re=".*", we_re=".*", query_id=QUERY_ID,
+        start_ms=start, end_ms=end, step_ms=step, interval_ms=interval,
+    ), None)
+    # The pre-budget query: the original per-step aggregation and names, without coarsening.
+    original = sql.split(", sizing AS (", 1)[0].replace(", fine AS (", ", r AS (")
+    original += "\nSELECT labels, t, value FROM r JOIN names USING (k)"
+    legend = " - ".join("{{" + k + "}}" for k in by)
+    def wrap(q):
+        return DC.wrap(q, ["labels", "t", "value"], legend,
+                       ["query_id"] if panel_id == 3 else [], ash=True,
+                       legend_column="__series", series_id=False, by=by)
+    return wrap(sql), wrap(original)
+
+
+def _csv_body(url, sql):
+    req = urllib.request.Request(url + "/sql?format=csv", sql.encode(), {"Content-Type": "text/plain"})
+    with urllib.request.urlopen(req) as response:
+        return response.read()
+
+
+@pytest.mark.parametrize("dashboard,panel_id", [(3, 19), (4, 2), (4, 3)])
+def test_ash_below_budget_preserves_csv_bytes(pgai_mon, dashboard, panel_id):
+    sql, original = _ash_query(dashboard, panel_id, FIXTURE_END_MS - 3_600_000,
+                               FIXTURE_END_MS, 30_000, 30_000)
+    got, fine = _csv_body(pgai_mon, sql), _csv_body(pgai_mon, original)
+    assert len(got.splitlines()) > 1
+    # SQL orders by time only; ties may arrive in a different order.
+    assert sorted(got.splitlines()) == sorted(fine.splitlines())
+
+
+@pytest.mark.parametrize("dashboard,panel_id", [(3, 19), (4, 2), (4, 3)])
+def test_ash_over_budget_preserves_series_and_bucket_means(pgai_mon, dashboard, panel_id):
+    from collections import defaultdict
+    from math import ceil
+
+    end, span = FIXTURE_END_MS - 300_000, 3_600_000
+    probe, _ = _ash_query(dashboard, panel_id, end - span, end, 30_000, 30_000)
+    groups = len({r["__series"] for r in csv.DictReader(io.StringIO(_csv_body(pgai_mon, probe).decode()))})
+    assert groups > 0
+    steps = ASH_BUDGET // groups + 3
+    steps += steps % 2 == 0  # Leave a partial last bucket.
+    step = span // (steps - 1)
+    start = end - (steps - 1) * step
+    # A fine evaluation grid with the fixture's 30 s scrape window keeps this fixture small.
+    sql, original = _ash_query(dashboard, panel_id, start, end, step, 30_000)
+    fine = list(csv.DictReader(io.StringIO(_csv_body(pgai_mon, original).decode())))
+    got = list(csv.DictReader(io.StringIO(_csv_body(pgai_mon, sql).decode())))
+    assert groups * steps > ASH_BUDGET
+    assert len(fine) > ASH_BUDGET
+    assert 0 < len(got) <= ASH_BUDGET
+    assert {r["__series"] for r in got} == {r["__series"] for r in fine}
+    assert [int(r["time"]) for r in got] == sorted(int(r["time"]) for r in got)
+    factor = ceil(steps / (ASH_BUDGET // groups))
+    expected = defaultdict(list)
+    for row in fine:
+        bucket = start + ((int(row["time"]) - start) // step // factor) * step * factor
+        expected[(row["__series"], row.get("query_id"), bucket)].append(float(row["value"]))
+    actual = {(r["__series"], r.get("query_id"), int(r["time"])): float(r["value"]) for r in got}
+    assert len(actual) == len(got)
+    assert actual.keys() == expected.keys()
+    for key, values in expected.items():
+        assert actual[key] == pytest.approx(sum(values) / len(values)), key
+    assert any(v == 0 for values in expected.values() for v in values)
+    assert any(v > 0 for values in expected.values() for v in values)
+    assert any(len(v) < factor for v in expected.values())  # Partial last bucket or telemetry gap.
+
+
+def test_ash_whole_buckets_fit_budget(pgai_mon):
+    sql = DC.case_sql({"sql_file": "sql/reports/dash/ash_by.sql"})
+    sizing = sql.split(", sizing AS (", 1)[1].split(", r AS (", 1)[0]
+    sql = "WITH names AS (SELECT * FROM range(3)), sizing AS (" + sizing + " SELECT factor FROM coarsening"
+    sql = DC.inline(sql.replace("32000::BIGINT", "5::BIGINT"), dict(start_ms=0, end_ms=20, step_ms=10), None)
+    got = CP.post(pgai_mon, sql)
+    assert "error" not in got, got
+    # ceil(3 * 3 / 5) = 2 would emit six rows, above the five-row budget.
+    assert got["rows"] == [{"factor": 3}]
+
+
+def test_ash_long_legend_csv_fits_budget(pgai_mon):
+    # PG17's longest combined wait type/event, a signed query ID, and a long numeric value.
+    labels = "map(['wait_event_type','wait_event','query_id'], ['Timeout','RecoveryRetrieveRetryInterval','-9223372036854775808'])"
+    sql = f"""WITH names AS (SELECT ['x'] AS k, {labels} AS labels),
+    r AS (SELECT ['x'] AS k, 1794206700000 + i * 30000 AS t, 1.2345678901234567 AS value
+          FROM range({ASH_BUDGET}) v(i))
+    SELECT labels, t, value FROM r JOIN names USING (k)"""
+    wrapped = DC.wrap(sql, ["labels", "t", "value"],
+                      "{{wait_event_type}} - {{wait_event}} - {{query_id}}", ["query_id"], ash=True,
+                      legend_column="__series", series_id=False, by=["wait_event_type", "wait_event", "query_id"])
+    body = _csv_body(pgai_mon, wrapped)
+    assert len(body.splitlines()) == ASH_BUDGET + 1
+    row_bytes = len(body.splitlines(keepends=True)[1])
+    assert row_bytes * 80_000 > 5 * 1024 * 1024
+    assert len(body) < 5 * 1024 * 1024
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _csv_body(pgai_mon, wrapped.replace(f"range({ASH_BUDGET})", "range(80000)"))
+    assert exc.value.code == 413
+    assert b"result_too_large" in exc.value.read()
+
+
+def test_ash_empty_range_keeps_empty_result(pgai_mon):
+    sql, original = _ash_query(4, 3, FIXTURE_END_MS + 3_600_000,
+                               FIXTURE_END_MS + 7_200_000, 100, 30_000)
+    got = _csv_body(pgai_mon, sql)
+    assert got == _csv_body(pgai_mon, original)
+    assert len(got.splitlines()) == 1

@@ -32,7 +32,7 @@ WITH w AS (
   FROM prom_sum_over_time('up', [['job','=','pgwatch-prometheus']],
          getvariable('start_ms'), getvariable('end_ms'), getvariable('step_ms'), getvariable('interval_ms'))
   GROUP BY ALL HAVING sum(value) > 0
-), r AS (
+), fine AS (
   SELECT k, t, sum(v / n) AS value FROM filled JOIN up USING (instance, t) GROUP BY ALL
 ), names AS MATERIALIZED (
   -- A group's labels do not change at each time step.
@@ -40,5 +40,25 @@ WITH w AS (
            list_transform(range(1, len(k) + 1), lambda i: {'k': getvariable('by')[i], 'v': k[i]}),
            lambda e: e.v <> '')) AS labels
   FROM (SELECT DISTINCT k FROM w)
+), sizing AS (
+  -- Leave CSV space for long event names and the repeated query_id link label.
+  SELECT count(*) AS groups,
+         (getvariable('end_ms') - getvariable('start_ms')) // getvariable('step_ms') + 1 AS steps,
+         32000::BIGINT AS budget
+  FROM names
+), coarsening AS (
+  -- Whole buckets must fit too: ceil(groups * steps / budget) can leave an extra bucket.
+  SELECT greatest(1, ceil(steps::DOUBLE / greatest(1, budget // greatest(groups, 1)))::BIGINT) AS factor
+  FROM sizing
+), r AS (
+  -- Keep fine values untouched below the budget, including their floating-point representation.
+  SELECT k, t, value FROM fine CROSS JOIN coarsening WHERE factor = 1
+  UNION ALL
+  SELECT k,
+         getvariable('start_ms') + ((t - getvariable('start_ms')) // getvariable('step_ms') // factor)
+           * factor * getvariable('step_ms') AS t,
+         avg(value) AS value
+  FROM fine CROSS JOIN coarsening WHERE factor > 1
+  GROUP BY ALL
 )
 SELECT labels, t, value FROM r JOIN names USING (k);

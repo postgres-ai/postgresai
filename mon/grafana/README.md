@@ -58,6 +58,16 @@ Every time-series target, including stat panels and self-monitoring, uses Infini
 CSV parser with an empty root selector. Infinity keeps each response in frame metadata; a CSV
 string costs less memory than parsed JSON objects. Table targets still use JSON.
 
+The three grouped wait-event charts (dashboard 03 panel 19, dashboard 04 panels 2 and 3) keep every series and coarsen time when the series count times the step
+count exceeds 32,000 rows. Each bucket starts at its first grid step and shows the mean of
+the existing per-step average active sessions, including zero-filled values; steps without
+successful scrapes stay absent. Whole buckets must fit the budget, including a partial last
+bucket. Below the budget the rows and values are unchanged. The budget is lower than 80,000
+because panel 3 repeats the query ID in its legend and link label: a long PostgreSQL 17 event
+name makes a CSV row about 120 bytes, so 80,000 rows exceed the 5 MiB response limit.
+No Grafana setting change is needed. More than 32,000 distinct series cannot fit this row
+budget even at one point per series, and unusually long custom labels can still hit the byte limit.
+
 The legend column is `__series`, and the display-name override reads that label. Targets that
 need a separate identity emit `__sid`: a dense integer rank of the full label-set text, computed
 once per series. Infinity reads it as a string label. Ranks use leading zeros up to the widest
