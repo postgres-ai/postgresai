@@ -225,3 +225,18 @@ Follow the [PostgresAI color scheme](../../../docs/COLOR_SCHEME.md). ASH charts
 use exact RGB values from `docs/wait-event-colors.json`, never positional or
 theme-dependent named colors. Run `python3 scripts/sync-wait-event-colors.py`
 from the repository root after changing the palette. CI rejects drift.
+
+## Variable defaults
+
+Shipped query variables must not save values from a particular deployment or
+cached options. Empty defaults and the portable `All` selection are allowed.
+The query ID textbox starts empty. Custom display controls keep their defaults.
+
+The compiler clears deployment defaults from the legacy inputs. In dashboards
+09 and 11 it also excludes the exact `$other$` aggregate label in the schema,
+table and index variable SQL. Dashboards 08 and 10 keep aggregate rows.
+On a fresh install, Grafana selects the first available option (ordered by the
+variable query), or `All` when offered first; with no objects, the selector is
+empty. URL variable selections still take precedence.
+
+`tests/grafana_dashboards/test_variable_defaults.py` checks these rules.

@@ -452,12 +452,14 @@ def gvar(v, regex=False):
     return re.sub(r"\$\{?(\w+)\}?", r"${\1:regex}" if regex else r"${\1}", v)
 
 
-def label_values_sql(query):
+def label_values_sql(query, exclude_other=False):
     m = LABEL_VALUES.match(query)
     if not m:
         raise SystemExit(f"unsupported variable query {query!r}")
     metric, matchers, label = m.group(1), m.group(2) or "", m.group(3)
     where = ([f"metric = '{metric}'"] if metric else []) + [f"labels['{label}'] IS NOT NULL"]
+    if exclude_other:
+        where.append(f"labels['{label}'] <> '$other$'")
     for k, op, v in MATCHER.findall(matchers):
         lit = "'" + gvar(v, op in ("=~", "!~")).replace("'", "''") + "'"
         # {__name__=~"host_.+"}: the metric name is the series view's `metric` column
@@ -469,13 +471,17 @@ def label_values_sql(query):
     return f"SELECT DISTINCT labels['{label}'] AS value FROM series WHERE {' AND '.join(where)} ORDER BY 1"
 
 
-def compile_variable(v):
+def compile_variable(v, single_object=False):
     if v.get("type") != "query":
         return copy.deepcopy(v)  # custom / textbox: unchanged
     q = v.get("query")
     q = q.get("query") if isinstance(q, dict) else q
-    sql = label_values_sql(q)
+    sql = label_values_sql(q, exclude_other=single_object and v["name"] in
+                           ("schema_name", "table_name", "index_name"))
     out = {k: copy.deepcopy(x) for k, x in v.items() if k not in ("query", "definition", "datasource", "options")}
+    # Saved deployment values can select an unrelated object on a fresh install.
+    current = v.get("current") or {}
+    out["current"] = current if v.get("includeAll") and current.get("value") in ("$__all", ["$__all"]) else {}
     out["datasource"] = dict(INFINITY)
     sql = sqlstring_vars(sql)
     out["definition"] = sql
@@ -631,7 +637,8 @@ def compile_dashboard(spec, by_id, probe_url):
             p["transformations"] = value_field_renames(table_refs) + (p.get("transformations") or [])
         p["datasource"] = dict(INFINITY) if all("infinity" in json.dumps(x.get("datasource")) for x in new) \
             else {"type": "datasource", "uid": "-- Mixed --"}
-    d["templating"]["list"] = [compile_variable(v) for v in src["templating"]["list"]]
+    d["templating"]["list"] = [compile_variable(v, single_object=spec["census"] in ("D9", "D11"))
+                               for v in src["templating"]["list"]]
     return d, n, queries
 
 

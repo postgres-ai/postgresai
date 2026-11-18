@@ -236,8 +236,9 @@ class Emitted(unittest.TestCase):
                 if a["type"] != "query":
                     self.assertEqual(a, b)
                     continue
-                for k in ("multi", "includeAll", "label", "current", "refresh", "allValue"):
+                for k in ("multi", "includeAll", "label", "refresh", "allValue"):
                     self.assertEqual(a.get(k), b.get(k), f"{a['name']} {k}")
+                self.assertEqual(b, C.compile_variable(a, single_object=spec["census"] in ("D9", "D11")))
                 self.assertEqual(b["datasource"], C.INFINITY)
                 self.assertEqual(b["query"]["infinityQuery"]["url_options"]["data"], b["definition"])
 
