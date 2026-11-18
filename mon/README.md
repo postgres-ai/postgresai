@@ -104,6 +104,12 @@ Conventions of the `prom_*` functions:
   time, ms) and `value`. `prom_agg` returns `labels`, `t`, `value`.
 - An instant query at time `T` is a range query with `start = end = T` and `step = 300000`.
 
+Bare selectors currently infer lookback from fetched samples, not `metric_dict.interval_s`.
+A slow job's only sample can fall outside that fetch window, leaving a short-range chart empty.
+Explicit `*_over_time` windows read historical samples; they do not provide the same staleness
+semantics as a bare selector. Native collector target removal does not yet write staleness
+markers, so extending lookback alone would keep removed targets visible for longer.
+
 | PromQL | SQL |
 |---|---|
 | `m{cluster="c"}` at time T | `SELECT labels, value FROM prom_last('m', [['cluster','=','c']], T, T, 300000)` |
@@ -370,6 +376,9 @@ the same labels as `pgai_mon_timeouts_total`.
 
 Variables named `PGAI_EVAL_*`, `PGAI_QUERY_TIMING`, `PGAI_NO_ROLLUP*`, `PGAI_ROLLUP_*` and
 `PGAI_TOPK_*` are diagnostics for developers and tests; see their use in `src/eval/`.
+`PGAI_QUERY_TIMING=1` logs read-only checking, preparation, execution, Arrow fetching, JSON
+encoding and sample-file opening times. Scan times are part of execution/fetch, not additional
+elapsed time. Measure HTTP time separately: cached bodies retain the original `elapsed_ms`.
 
 ### Retention
 

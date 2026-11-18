@@ -1072,8 +1072,15 @@ impl Reader {
         let mut truncated = false;
         let columns: Vec<String>;
         let arrow_types: Vec<String>;
+        let timing = std::env::var_os("PGAI_QUERY_TIMING").is_some();
+        let t_exec = Instant::now();
+        let mut t_fetch = Duration::ZERO;
+        let mut t_encode = Duration::ZERO;
         {
-            let stream = st.stream_arrow([]).map_err(|e| classify(&e))?;
+            let mut stream = st.stream_arrow([]).map_err(|e| classify(&e))?;
+            if timing {
+                eprintln!("query timing: execute {:?}", t_exec.elapsed());
+            }
             let schema = stream.get_schema();
             columns = schema.fields().iter().map(|f| f.name().clone()).collect();
             arrow_types = schema.fields().iter().map(|f| format!("{}", f.data_type())).collect();
@@ -1088,7 +1095,14 @@ impl Reader {
             };
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), QueryError> {
                 let mut s = String::new();
-                for batch in stream {
+                loop {
+                    let t = timing.then(Instant::now);
+                    let batch = stream.next();
+                    if let Some(t) = t {
+                        t_fetch += t.elapsed();
+                    }
+                    let Some(batch) = batch else { break };
+                    let t = timing.then(Instant::now);
                     let cols = batch.columns();
                     if columnar && cols_out.is_empty() {
                         cols_out.resize_with(cols.len(), Default::default);
@@ -1096,7 +1110,7 @@ impl Reader {
                     for i in 0..batch.num_rows() {
                         if nrows >= self.cfg.max_rows {
                             truncated = true;
-                            return Ok(());
+                            break;
                         }
                         if columnar {
                             let mut add = 0;
@@ -1112,14 +1126,14 @@ impl Reader {
                                     c.idx.pop();
                                 }
                                 truncated = true;
-                                return Ok(());
+                                break;
                             }
                             nrows += 1;
                             continue;
                         }
                         if out.len() >= self.cfg.max_rows {
                             truncated = true;
-                            return Ok(());
+                            break;
                         }
                         s.clear();
                         s.push(if keys.is_empty() { '[' } else { '{' });
@@ -1136,13 +1150,19 @@ impl Reader {
                         bytes += s.len() + 1;
                         if bytes > self.cfg.max_bytes {
                             truncated = true;
-                            return Ok(());
+                            break;
                         }
                         out.push(
                             serde_json::value::RawValue::from_string(s.clone())
                                 .map_err(|e| QueryError::new("internal", e.to_string()))?,
                         );
                         nrows += 1;
+                    }
+                    if let Some(t) = t {
+                        t_encode += t.elapsed();
+                    }
+                    if truncated {
+                        break;
                     }
                 }
                 Ok(())
@@ -1166,6 +1186,9 @@ impl Reader {
                     return Err(QueryError::new(kind, m));
                 }
             }
+        }
+        if timing {
+            eprintln!("query timing: fetch {t_fetch:?} encode {t_encode:?} rows {nrows} bytes {bytes}");
         }
         // The objects format feeds charts, which show nothing of a `truncated` flag: a series
         // that stops early looks like a collector outage. There a cut result is an error.

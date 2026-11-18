@@ -48,6 +48,11 @@ or the pgwatch Postgres sink: the four tables that did (Dashboard 2's pg_stat_st
 Dashboard 3's query text, Dashboard 8's table stats, Dashboard 10's B-tree bloat) run the SQL in
 `../sql/reports/panels/` (`TABLE_PANELS` in `compile.py`), keeping their column names.
 
+The grouped ASH charts use `ash_by.sql`'s `r(k,t,value)` and `names(k,labels)` relations.
+The compiler formats each group's legend in a materialized `rendered` relation before joining
+the time grid. Keep that work before the join: formatting every point is costly for many query IDs.
+The SQL template's final SELECT is also used directly by the evaluator comparison cases.
+
 ## Inputs
 
 - `old/config/grafana/dashboards/Dashboard_<n>_*.json`: the PromQL originals (read only);

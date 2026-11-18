@@ -375,13 +375,27 @@ def legend_expr(fmt, cols):
     return " || ".join(parts) or "''"
 
 
-def wrap(sql, cols, legend, extra):
+def wrap(sql, cols, legend, extra, ash=False):
     """The Infinity-facing query. NaN/Inf points are dropped (Prometheus never returns NaN on
     a range query except staleness, and the strings "NaN"/"+Inf" would not parse as numbers)."""
     sel = ["CAST(q.t AS BIGINT) AS time", "CAST(q.value AS DOUBLE) AS value", f"{legend_expr(legend, cols)} AS series"]
     sel += [f"{label_expr(cols, x)} AS {x}" for x in extra]
     # the whole label set: series with equal legends stay apart (Prometheus shows both)
     sel.append(f"{auto_legend(cols)} AS label_set")
+    if ash:
+        # ash_by.sql exposes r(k,t,value) and names(k,labels). Format names before the grid join.
+        assert set(cols) == {"labels", "t", "value"}
+        tail = "SELECT labels, t, value FROM r JOIN names USING (k)"
+        assert sql.endswith(tail), "ash_by.sql output changed"
+        names = ["q.k", f"{legend_expr(legend, cols)} AS series"]
+        names += [f"{label_expr(cols, x)} AS {x}" for x in extra]
+        names.append(f"{auto_legend(cols)} AS label_set")
+        projected = ["CAST(r.t AS BIGINT) AS time", "CAST(r.value AS DOUBLE) AS value"]
+        projected += [f"n.{x}" for x in ["series", *extra, "label_set"]]
+        return (sql[:-len(tail)].rstrip() + ", rendered AS MATERIALIZED (\n"
+                f"SELECT {', '.join(names)} FROM names q\n)\n"
+                f"SELECT {', '.join(projected)}\nFROM r JOIN rendered n USING (k)\n"
+                "WHERE r.value IS NOT NULL AND isfinite(CAST(r.value AS DOUBLE))\nORDER BY time")
     return (f"WITH q AS (\n{sql}\n)\nSELECT {', '.join(sel)}\nFROM q\n"
             "WHERE q.value IS NOT NULL AND isfinite(CAST(q.value AS DOUBLE))\nORDER BY time")
 
@@ -614,7 +628,8 @@ def compile_dashboard(spec, by_id, probe_url):
             keys = table_label_keys(p, probe_url, params.get("metric")) if table else None
             inner = inline(case_sql(case), params, gp, mvars)
             body = wrap_table(inner, cols, keys) if table else \
-                wrap(inner, cols, t.get("legendFormat"), spec["extra_labels"])
+                wrap(inner, cols, t.get("legendFormat"), spec["extra_labels"],
+                     ash=case["sql_file"] == "sql/reports/dash/ash_by.sql")
             new.append(infinity_target(t["refId"], body, t.get("hide"), spec["extra_labels"], keys))
             if table:
                 table_refs.append(t["refId"])

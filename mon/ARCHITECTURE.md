@@ -139,6 +139,8 @@ client ─► POST /sql ─► auth ─► result cache ─► admission ─► 
    An entry is valid for one catalog generation, so it never outlives a flush or compaction.
    Identical requests that arrive while one runs wait for it. Queries that call clock
    functions are not cached. The response header `x-pgai-cache` says how it was served.
+   Moving Grafana time bounds change the SQL text even when alignment gives the same grid;
+   those requests miss L1. A hit retains the original body's `elapsed_ms`.
 3. **Admission** (`admission.rs`). `http.max_concurrent` queries run at once (default: one per
    core, at most 4). One slot is kept for short queries. Up to `http.queue_max` (64) wait for
    at most `http.queue_wait_ms` (30 s); beyond that the answer is `busy`, HTTP 429.

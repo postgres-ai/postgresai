@@ -34,8 +34,11 @@ WITH w AS (
   GROUP BY ALL HAVING sum(value) > 0
 ), r AS (
   SELECT k, t, sum(v / n) AS value FROM filled JOIN up USING (instance, t) GROUP BY ALL
+), names AS MATERIALIZED (
+  -- A group's labels do not change at each time step.
+  SELECT k, map_from_entries(list_filter(
+           list_transform(range(1, len(k) + 1), lambda i: {'k': getvariable('by')[i], 'v': k[i]}),
+           lambda e: e.v <> '')) AS labels
+  FROM (SELECT DISTINCT k FROM w)
 )
-SELECT map_from_entries(list_filter(
-         list_transform(range(1, len(k) + 1), lambda i: {'k': getvariable('by')[i], 'v': k[i]}),
-         lambda e: e.v <> '')) AS labels, t, value
-FROM r;
+SELECT labels, t, value FROM r JOIN names USING (k);

@@ -144,6 +144,15 @@ def test_single_query_ash_is_fully_scoped() -> None:
     assert branch(sql, "query") == "[['query_id','=',(${query_id:sqlstring})],['query_id','!=','']]"
 
 
+def test_ash_labels_are_built_and_formatted_once_per_group() -> None:
+    for number, panel_id in ((3, 19), (4, 2), (4, 3)):
+        sql = target_query(_panel(number, panel_id)["targets"][0])
+        assert "FROM (SELECT DISTINCT k FROM w)" in sql
+        assert "rendered AS MATERIALIZED" in sql
+        assert "FROM names q" in sql
+        assert "FROM r JOIN rendered n USING (k)" in sql
+
+
 def test_wait_event_variables_follow_scope_dependency_order() -> None:
     variables = _load(dashboard_file(4))["templating"]["list"]
     assert [v["name"] for v in variables] == [

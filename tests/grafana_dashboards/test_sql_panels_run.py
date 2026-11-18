@@ -14,6 +14,7 @@ from __future__ import annotations
 import gzip
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -27,6 +28,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "mon" / "grafana"))
 import check_panels as CP  # noqa: E402
+import compile as DC  # noqa: E402
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "panel_store.jsonl.gz"
 FIXTURE_END_MS = 1794206700000  # make_panel_store.py --end-ms
@@ -151,3 +153,77 @@ def test_every_panel_has_data(pgai_mon, tmp_path):
     assert rc == 0
     # every query panel ran (only rows and text panels have no targets)
     assert sum(1 for r in results for p in r["panels"] if p["class"] == "data") >= 180
+
+
+def test_ash_label_dictionary_matches_per_row_formatting(pgai_mon):
+    # Empty, missing and unusual labels must keep exactly the same Grafana series identity.
+    labels = """SELECT row_number() OVER () AS k, labels FROM (VALUES
+      (map(['wait_event_type','wait_event','query_id'], ['IO','DataFileRead','42'])),
+      (map(['wait_event_type','wait_event'], ['IO','DataFileRead'])),
+      (map(['wait_event_type','wait_event'], ['', 'é\"\\event'])),
+      (map(['query_id'], ['42'])),
+      (map()), (NULL::MAP(VARCHAR,VARCHAR))
+    ) s(labels)"""
+    sql = f"""WITH names AS MATERIALIZED ({labels}), r AS MATERIALIZED (
+      SELECT k, t, value FROM names
+      CROSS JOIN (VALUES (30000::BIGINT, 1.0), (60000, 0.0)) v(t,value)
+    )
+    SELECT labels, t, value FROM r JOIN names USING (k)"""
+    cols = ["labels", "t", "value"]
+    legend = "{{wait_event_type}} - {{wait_event}} - {{query_id}}"
+    plain = CP.post(pgai_mon, DC.wrap(sql, cols, legend, []))
+    once = CP.post(pgai_mon, DC.wrap(sql, cols, legend, [], ash=True))
+    assert "error" not in plain and "error" not in once, (plain, once)
+    assert plain["columns"] == once["columns"]
+    ordered = lambda rows: sorted(rows, key=lambda r: json.dumps(r, sort_keys=True))
+    assert len(plain["rows"]) == 12
+    assert ordered(plain["rows"]) == ordered(once["rows"])
+
+
+def test_ash_panel_identical_http_request_hits_cache(pgai_mon):
+    path = next((REPO_ROOT / "mon/grafana/dashboards").glob("Dashboard_4_*.json"))
+    panel = next(p for p in CP.walk(json.loads(path.read_text())["panels"]) if p.get("id") == 3)
+    variables = {k: [v] for k, v in dict(
+        cluster_name="local", node_name="node-01", db_name="target_database",
+        wait_event_type=CP.CustomAll(".*"), wait_event=CP.CustomAll(".*"),
+    ).items()}
+    sql, left = CP.interpolate(panel["targets"][0]["url_options"]["data"], variables,
+                               CP.builtin_vars(FIXTURE_END_MS - 6420000, FIXTURE_END_MS, 30000))
+    assert not left
+    req = urllib.request.Request(pgai_mon + "/sql?format=objects", sql.encode(),
+                                 {"Content-Type": "text/plain"})
+    with urllib.request.urlopen(req) as response:
+        first = response.read()
+    with urllib.request.urlopen(req) as response:
+        assert response.headers["x-pgai-cache"] == "hit"
+        assert response.read() == first
+    assert json.loads(first)["row_count"] > 0
+
+
+def test_ash_group_names_preserve_sparse_instance_normalization(pgai_mon):
+    sql = DC.case_sql({"sql_file": "sql/reports/dash/ash_by.sql"})
+    # Feed the aggregation stage directly; evaluator bucket semantics have their own tests.
+    for metric, relation in (("pgwatch_wait_events_total", "waits"), ("up", "up_rows")):
+        sql, count = re.subn(
+            rf"prom_sum_over_time\('{metric}',[\s\S]*?getvariable\('interval_ms'\)\)",
+            f"(SELECT labels, t, value FROM {relation})", sql,
+        )
+        assert count == 1
+    inputs = """WITH waits AS (
+      SELECT map(['instance','wait_event_type','wait_event','query_id'],
+                 [instance,wet,'DataFileRead','42']) AS labels, t, value
+      FROM (VALUES ('a','IO',0,1.0), ('a','IO',20,2.0), ('b','IO',10,9.0),
+                   ('orphan','Lock',0,100.0)) v(instance,wet,t,value)
+    ), up_rows AS (
+      SELECT map(['instance'], [instance]) AS labels, t, value
+      FROM (VALUES ('a',0,2.0), ('a',10,2.0), ('a',20,0.0),
+                   ('b',0,4.0), ('b',10,3.0), ('b',20,2.0)) v(instance,t,value)
+    ), w AS ("""
+    sql = sql.replace("WITH w AS (", inputs, 1)
+    sql = DC.inline(sql, dict(by=["wait_event_type", "wait_event", "query_id"],
+                              start_ms=0, end_ms=30, step_ms=10), None)
+    result = CP.post(pgai_mon, DC.wrap(sql, ["labels", "t", "value"], "{{wait_event_type}}", [], ash=True))
+    assert "error" not in result, result
+    assert [(r["time"], r["value"], r["series"]) for r in result["rows"]] == [
+        (0, 0.5, "IO"), (10, 3.0, "IO"), (20, 0.0, "IO"),
+    ]

@@ -136,6 +136,7 @@ impl Scan {
         t1: i64,
         skip: Option<(i64, i64)>,
     ) -> anyhow::Result<Self> {
+        let t_open = std::time::Instant::now();
         let mut s = Scan {
             ids: ids.into(),
             t0,
@@ -229,6 +230,13 @@ impl Scan {
             });
         }
         crate::objstore::submit(plans);
+        if std::env::var_os("PGAI_QUERY_TIMING").is_some() {
+            eprintln!(
+                "query timing: open {} sample files {:?}",
+                s.cursors.len(),
+                t_open.elapsed()
+            );
+        }
         for i in 0..s.cursors.len() {
             if s.fill(i)? {
                 let c = &s.cursors[i];
