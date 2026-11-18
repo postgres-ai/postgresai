@@ -159,3 +159,37 @@ def test_format_report_data_with_multi_node_structure(generator) -> None:
     assert "results" in result
     assert "node-01" in result["results"]
     assert "node-02" in result["results"]
+
+
+@pytest.mark.parametrize("database_label", ["datname", "real_dbname"])
+def test_redundant_indexes_discover_database_not_target(generator, database_label):
+    def query(q):
+        rows = []
+        if "pgwatch_redundant_indexes_" in q:
+            rows = [{"metric": {"dbname": "illdb2", database_label: "illdb"}},
+                    {"metric": {"dbname": "target-without-database-label"}}]
+        return {"status": "success", "data": {"result": rows}}
+
+    with patch.object(generator, "query_instant", side_effect=query):
+        assert generator.get_all_databases() == ["illdb"]
+
+
+def test_independent_primary_is_never_a_standby(generator):
+    def query(q):
+        if "pgwatch_settings_configured" in q:
+            rows = [{"metric": {"node_name": n}} for n in ("illdb2", "illdb3", "replica")]
+        else:
+            rows = [{"value": [1, "1" if 'node_name="replica"' in q else "0"]}]
+        return {"status": "success", "data": {"result": rows}}
+
+    with patch.object(generator, "query_instant", side_effect=query), patch("reporter.postgres_reports.logger.warning") as warning:
+        assert generator.get_all_nodes("default") == {"primary": "illdb2", "standbys": ["replica"]}
+    message = warning.call_args.args[0]
+    assert "--cluster" in message
+    assert "omitting 'illdb3'" in message
+
+
+def test_index_overlap_does_not_match_another_databases_target_name(generator):
+    rows = [{"metric": {"dbname": "illdb", "real_dbname": "other", "schema_name": "public", "index_name": "i"}}]
+    with patch.object(generator, "query_instant", return_value={"status": "success", "data": {"result": rows}}):
+        assert generator._f005_listed("metric", "illdb")["names"] == set()

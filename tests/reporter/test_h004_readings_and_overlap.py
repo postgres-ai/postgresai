@@ -57,7 +57,7 @@ def _gen(monkeypatch: pytest.MonkeyPatch, responses: Dict[str, Any]) -> Postgres
         return {"status": "success", "data": {"result": []}}
 
     monkeypatch.setattr(gen, "query_instant", fake)
-    monkeypatch.setattr(gen, "get_all_databases", lambda *a, **k: ["app", SOURCE])
+    monkeypatch.setattr(gen, "get_all_databases", lambda *a, **k: ["app"])
     monkeypatch.setattr(gen, "get_index_definitions_from_sink", lambda db: {})
     monkeypatch.setattr(gen, "_get_postgres_version_info", lambda *a, **k: {
         "version": "17.6", "server_version_num": "170006", "server_major_ver": "17", "server_minor_ver": "6"})
@@ -66,9 +66,9 @@ def _gen(monkeypatch: pytest.MonkeyPatch, responses: Dict[str, Any]) -> Postgres
     return gen
 
 
-def _only_source(rows: List[Dict[str, Any]]):
-    """Series of the redundant_indexes metric answer only for the source's dbname."""
-    return lambda q: rows if f'dbname="{SOURCE}"' in q else []
+def _only_database(rows: List[Dict[str, Any]]):
+    """Series select the database through the collector's real_dbname label."""
+    return lambda q: rows if 'real_dbname="app"' in q else []
 
 
 def _responses(**over: Any) -> Dict[str, Any]:
@@ -78,13 +78,13 @@ def _responses(**over: Any) -> Dict[str, Any]:
         "pgwatch_stats_reset_stats_reset_epoch{": lambda q: (
             [{"metric": {"database_name": "app"}, "value": [NOW, str(NOW - 30 * 86400)]}]
             if 'database_name="app"' in q else []),
-        "min_over_time(timestamp(pgwatch_redundant_indexes_index_usage": _only_source([
+        "min_over_time(timestamp(pgwatch_redundant_indexes_index_usage": _only_database([
             {"metric": DUP, "value": [NOW, str(FIRST)]}, {"metric": OLD, "value": [NOW, str(FIRST + 86400)]}]),
-        "max_over_time(timestamp(pgwatch_redundant_indexes_index_usage": _only_source([
+        "max_over_time(timestamp(pgwatch_redundant_indexes_index_usage": _only_database([
             {"metric": DUP, "value": [NOW, str(LAST)]}, {"metric": OLD, "value": [NOW, str(LAST)]}]),
-        "min_over_time(pgwatch_redundant_indexes_index_usage": _only_source([
+        "min_over_time(pgwatch_redundant_indexes_index_usage": _only_database([
             {"metric": DUP, "value": [NOW, "5"]}, {"metric": OLD, "value": [NOW, "0"]}]),
-        "pgwatch_redundant_indexes_index_size_bytes": _only_source([
+        "pgwatch_redundant_indexes_index_size_bytes": _only_database([
             {"metric": DUP, "value": [NOW, "827392"]}, {"metric": OLD, "value": [NOW, "409600"]}]),
         "pgwatch_redundant_indexes_index_usage{": lambda q: (
             [{"metric": DUP, "value": [NOW, "9"]}] if "accounts_email_dup_idx" in q else
@@ -183,7 +183,7 @@ def test_readings_aggregate_each_candidates_series(monkeypatch: pytest.MonkeyPat
     gen.generate_h004_redundant_indexes_report("c", "n")
     readings = [q for q in gen.seen if "over_time" in q and "pgwatch_redundant_indexes_index_usage" in q
                 and "[3h]" not in q]
-    assert len(readings) == 6  # three readings for each of the two databases
+    assert len(readings) == 3  # three readings for the actual database
     for q in readings:
         assert q.startswith(("min by (schema_name, table_name, index_name) (",
                              "max by (schema_name, table_name, index_name) (")), q

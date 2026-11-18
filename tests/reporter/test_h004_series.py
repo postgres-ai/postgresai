@@ -10,6 +10,7 @@ series, and its table size, scans and foreign-key flag from that same series.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, List
 
 import pytest
@@ -29,7 +30,7 @@ def _matching(rows: List[Dict[str, Any]]):
     """Rows whose labels agree with every label matcher the query names (as a metric store selects)."""
     def pick(q: str) -> List[Dict[str, Any]]:
         return [r for r in rows
-                if all(f'{k}="{_esc(v)}"' in q for k, v in r["metric"].items() if f'{k}="' in q)]
+                if all(f'{k}="{_esc(v)}"' in q for k, v in r["metric"].items() if re.search(r'(?<!\w)' + re.escape(k) + '="', q))]
     return pick
 
 

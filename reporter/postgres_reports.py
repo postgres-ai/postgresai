@@ -2098,28 +2098,24 @@ class PostgresReportGenerator:
         # Get all databases
         databases = self.get_all_databases(cluster, node_name)
 
-        # Database sizes by datname, and by pgwatch's source name (dbname): the redundant_indexes
-        # series carry the source name, which is not the database's name on managed platforms.
+        # Match database sizes by the database name, never the monitoring source name.
         db_sizes_query = f'last_over_time(pgwatch_db_size_size_b{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         db_sizes_result = self.query_instant(db_sizes_query)
         database_sizes = {}
-        source_sizes = {}
 
         if db_sizes_result.get('status') == 'success' and db_sizes_result.get('data', {}).get('result'):
             for result in db_sizes_result['data']['result']:
                 db_name = result['metric'].get('datname', 'unknown')
                 size_bytes = float(result['value'][1])
                 database_sizes[db_name] = size_bytes
-                if result['metric'].get('dbname'):
-                    source_sizes[result['metric']['dbname']] = size_bytes
 
         redundant_indexes_by_db = {}
         for db_name in databases:
             # Fetch index definitions from the sink for this database (used to aid remediation)
             index_definitions = self.get_index_definitions_from_sink(db_name)
             # Query redundant indexes for each database using last_over_time to get most recent value
-            redundant_indexes_query = f'last_over_time(pgwatch_redundant_indexes_index_size_bytes{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", dbname="{_esc(db_name)}"}}[3h])'
-            sel = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", dbname="{_esc(db_name)}"'
+            redundant_indexes_query = f'last_over_time(pgwatch_redundant_indexes_index_size_bytes{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", real_dbname="{_esc(db_name)}"}}[3h])'
+            sel = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", real_dbname="{_esc(db_name)}"'
             candidates = self._h004_latest_series(
                 self.query_instant(redundant_indexes_query),
                 f'tlast_over_time(pgwatch_redundant_indexes_index_size_bytes{{{sel}}}[3h])')
@@ -2156,9 +2152,9 @@ class PostgresReportGenerator:
 
                     # The same row's other columns: the candidate's series by all its labels (#483),
                     # else by the index alone (a store that labels the columns differently).
-                    _idx_filter = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", dbname="{_esc(db_name)}", schema_name="{_esc(schema_name)}", table_name="{_esc(table_name)}", index_name="{_esc(index_name)}"'
+                    _idx_filter = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", real_dbname="{_esc(db_name)}", schema_name="{_esc(schema_name)}", table_name="{_esc(table_name)}", index_name="{_esc(index_name)}"'
                     _series_filter = ", ".join(f'{k}="{_esc(v)}"' for k, v in self._h004_series_labels(
-                        dict({"cluster": cluster, "node_name": node_name, "dbname": db_name}, **item['metric'])))
+                        dict({"cluster": cluster, "node_name": node_name, "real_dbname": db_name}, **item['metric'])))
 
                     def _column(name: str) -> Optional[float]:
                         for flt in (_series_filter, _idx_filter):
@@ -2227,7 +2223,7 @@ class PostgresReportGenerator:
                     for cover in idx["redundant_to"]:
                         cover["also_unused"] = self._h004_qualified(cover["index_name"], idx["schema_name"]) in unused
 
-            db_size_bytes = database_sizes.get(real_db) or source_sizes.get(db_name, 0)
+            db_size_bytes = database_sizes.get(real_db, 0)
             entry = {
                 "redundant_indexes": redundant_indexes,
                 "total_count": len(redundant_indexes),
@@ -3186,7 +3182,7 @@ class PostgresReportGenerator:
         for row in (result.get('data') or {}).get('result') or []:
             metric = row.get('metric') or {}
             if db_name is not None and db_name not in (
-                    metric.get('real_dbname'), metric.get('datname'), metric.get('dbname')):
+                    metric.get('real_dbname'), metric.get('datname')):
                 continue
             schema, index = metric.get('schema_name', ''), metric.get('index_name', '')
             if "$other$" in (schema, index):
@@ -7132,9 +7128,11 @@ class PostgresReportGenerator:
                 if nodes["primary"] is None:
                     nodes["primary"] = node_name
                 else:
-                    # If we have multiple primaries (shouldn't happen), treat as replicas
-                    logger.warning(f"Multiple primary nodes detected, treating '{node_name}' as replica")
-                    nodes["standbys"].append(node_name)
+                    logger.warning(
+                        f"Multiple primary nodes detected in cluster '{cluster}'; "
+                        f"omitting '{node_name}' from this report, not listing it as a standby. "
+                        "Assign unrelated nodes separate clusters with mon targets add --cluster <name> "
+                        "(custom_tags.cluster in instances.yml for existing targets).")
 
         logger.info(f"Result: primary={nodes['primary']}, replicas={nodes['standbys']}")
         return nodes
@@ -7153,7 +7151,7 @@ class PostgresReportGenerator:
         _esc = self._escape_promql_label
         # Build a source-agnostic database list by unifying labels from:
         # 1) Generic per-database metric (wraparound) → datname
-        # 2) Custom index reports (unused/redundant) → dbname
+        # 2) Custom index reports → datname or real_dbname
         # 3) Btree bloat (for completeness) → datname
         databases: List[str] = []
         database_set = set()
@@ -7171,7 +7169,7 @@ class PostgresReportGenerator:
             for item in wrap_res['data']['result']:
                 add_db(item["metric"].get("datname", ""))
 
-        # 2) Custom reports - unused indexes now uses datname, redundant still uses dbname
+        # 2) Custom reports: dbname is the monitoring source, never a database.
         unused_q = f'last_over_time(pgwatch_unused_indexes_index_size_bytes{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         unused_res = self.query_instant(unused_q)
         if unused_res.get('status') == 'success' and unused_res.get('data', {}).get('result'):
@@ -7182,7 +7180,7 @@ class PostgresReportGenerator:
         redun_res = self.query_instant(redun_q)
         if redun_res.get('status') == 'success' and redun_res.get('data', {}).get('result'):
             for item in redun_res['data']['result']:
-                add_db(item["metric"].get("dbname", ""))
+                add_db(item["metric"].get("datname") or item["metric"].get("real_dbname", ""))
 
         # 3) Btree bloat family
         bloat_q = f'last_over_time(pgwatch_pg_btree_bloat_bloat_pct{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'

@@ -588,7 +588,7 @@ the previous stack keeps its `VM_RETENTION_PERIOD` and `QUERYID_RETENTION_HOURS`
 #### Monitoring target databases (`mon targets` subgroup)
 ```bash
 postgresai mon targets list                       # List databases to monitor
-postgresai mon targets add <conn-string> <name>   # Add database to monitor
+postgresai mon targets add <conn-string> <name> [--cluster <name>] # Default cluster: default
 # Same, URL kept out of argv and out of the sudo log (read from stdin, not exported),
 # unless sudoers enables I/O logging (log_input), which records stdin:
 printf '%s\n' "$URL" | sudo sh -c 'IFS= read -r PGAI_DB_URL; export PGAI_DB_URL; exec postgresai mon targets add <name>'
@@ -597,6 +597,14 @@ sudo sh -c 'IFS= read -r PGAI_DB_URL < /path/to/db-url; export PGAI_DB_URL; exec
 postgresai mon targets remove <name>              # Remove monitoring target
 postgresai mon targets test <name>                # Test target connectivity
 ```
+
+The first report after startup ends its window at run time; later reports end at the previous full hour.
+Targets in one replication cluster should share `--cluster`; use different names for unrelated servers.
+Adding a new target to a cluster that already has targets prints a note naming up to three of them.
+For existing targets, edit `custom_tags.cluster` in `instances.yml`. An add with a different cluster
+is refused; an add without `--cluster` preserves an existing target's cluster.
+The reporter keeps the first primary by node name and omits additional primaries with a warning;
+it never lists an additional primary as a standby.
 
 #### Configuration and maintenance
 ```bash
@@ -653,6 +661,7 @@ When writing queries:
 - `queryid` is BIGINT in `query_texts` and text in a series' labels, so a join needs a cast
   (`labels['queryid'] = queryid::varchar`). Wait-event series carry it as `query_id`.
 - In the labels, `dbname` is the monitored source (the node) and `datname` the database.
+  The collector also supplies `real_dbname`; redundant-index metrics use this database label.
 - `information_schema.columns` lists the views and their columns; `metric_dict` lists the
   metrics.
 - `logs`, `plans` and `plan_events` are empty unless Postgres logs are collected.

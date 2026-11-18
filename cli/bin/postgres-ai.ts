@@ -6813,7 +6813,7 @@ const isPlainTargetName = (value: string): boolean => /^[A-Za-z0-9._=-]+$/.test(
 /** Returns whether the Postgres target is saved in `file` (host metrics may still have failed). */
 export async function addTarget(
   file: string, projectDir: string, connStr: string | undefined, name: string | undefined,
-  env: NodeJS.ProcessEnv, { apply = true, verifyTls }: { apply?: boolean; verifyTls?: (url: string) => Promise<void> } = {},
+  env: NodeJS.ProcessEnv, { apply = true, verifyTls, cluster }: { apply?: boolean; verifyTls?: (url: string) => Promise<void>; cluster?: string } = {},
 ): Promise<boolean> {
   if (!connStr) {
     console.error("Connection string required: postgresql://user:pass@host:port/db");
@@ -6846,13 +6846,29 @@ export async function addTarget(
   }
 
   try {
-    const existing = loadInstances(file).find((instance) => instance.name === instanceName);
+    const instances = loadInstances(file);
+    const existing = instances.find((instance) => instance.name === instanceName);
+    if (cluster !== undefined && !cluster.trim()) {
+      throw new Error("Cluster name must not be empty");
+    }
+    if (existing && cluster !== undefined && existing.custom_tags?.cluster !== cluster) {
+      throw new Error("Target already exists with a different cluster; edit custom_tags.cluster in instances.yml");
+    }
     const instance = existing?.conn_str === connStr ? existing : buildInstance(instanceName, connStr);
+    if (cluster !== undefined) instance.custom_tags = { ...instance.custom_tags, cluster };
     if (existing && existing.conn_str === connStr) {
       console.log(`Monitoring target '${instanceName}' already exists`);
     } else {
       addInstanceToFile(file, instance);
       console.log(`Monitoring target '${instanceName}' added`);
+      const clusterName = instance.custom_tags?.cluster ?? "default";
+      const others = instances.filter((target) =>
+        target.name !== instanceName && (target.custom_tags?.cluster ?? "default") === clusterName);
+      if (!existing && others.length > 0) {
+        const names = others.slice(0, 3).map((target) => `'${target.name}'`).join(", ");
+        const more = others.length > 3 ? ` and ${others.length - 3} more` : "";
+        console.log(`Note: cluster '${clusterName}' already has target${others.length > 1 ? "s" : ""} ${names}${more}. Reports treat the targets of one cluster as one primary and its standbys. If this server is not part of that replication cluster, add it with --cluster <name>.`);
+      }
     }
     if (!(await setUpHostMetrics(projectDir, instance, connStr, env))) {
       process.exitCode = 1;
@@ -6918,6 +6934,7 @@ targets
 targets
   .command("add [connStr] [name]")
   .description("add monitoring target database")
+  .option("--cluster <name>", "cluster label for this target (default: default)")
   .option("--name <name>", "explicit target name (supports spaces and Unicode with PGAI_DB_URL)")
   .addHelpText("after", `
 ClickHouse host metrics (non-interactive):
@@ -6947,7 +6964,7 @@ Environment:
                  sudo sh -c \\
                    'IFS= read -r PGAI_DB_URL < /path/to/db-url; export PGAI_DB_URL; exec postgres-ai mon targets add my-db'
 `)
-  .action(async (connStr: string | undefined, name: string | undefined, options: { name?: string }) => {
+  .action(async (connStr: string | undefined, name: string | undefined, options: { name?: string; cluster?: string }) => {
     const { instancesFile: file, projectDir } = await resolveOrInitPaths();
     // Automation passes the URL here, not in argv, where `ps` and the sudo
     // log would show the password. A connection string in argv still wins.
@@ -6983,7 +7000,7 @@ Environment:
       }
       console.error(`Using PGAI_DB_URL${user ? ` (user ${user})` : ""}`);
     }
-    await addTarget(file, projectDir, connStr, name, process.env);
+    await addTarget(file, projectDir, connStr, name, process.env, { cluster: options.cluster });
   });
 targets
   .command("remove <name>")

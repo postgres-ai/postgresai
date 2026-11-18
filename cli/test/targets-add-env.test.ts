@@ -340,3 +340,47 @@ test("--name requires a value", () => {
   expect(out).toContain("argument missing");
   expect(instances()).toBe("");
 });
+
+test("targets add saves an explicit cluster and keeps the default otherwise", () => {
+  expect(run(["add", "primary", "--cluster", "independent"], { PGAI_DB_URL: url }).exitCode).toBe(0);
+  expect(instances()).toContain("cluster: independent");
+  expect(run(["add", "second"], { PGAI_DB_URL: other }).exitCode).toBe(0);
+  expect(instances()).toContain("cluster: default");
+  expect(run(["add", "primary", "--cluster", "independent"], { PGAI_DB_URL: url }).exitCode).toBe(0);
+  const saved = instances();
+  expect(run(["add", "primary"], { PGAI_DB_URL: url }).exitCode).toBe(0);
+  expect(instances()).toBe(saved);
+  expect(run(["add", "primary", "--cluster", "changed"], { PGAI_DB_URL: url }).exitCode).toBe(1);
+  expect(instances()).toBe(saved);
+});
+
+test("targets add rejects an empty cluster without saving a target", () => {
+  expect(run(["add", "app", "--cluster", " "], { PGAI_DB_URL: url }).exitCode).toBe(1);
+  expect(instances()).toBe("");
+});
+
+test("targets add notes other targets in the cluster only for a new target", () => {
+  const first = run(["add", "first"], { PGAI_DB_URL: url });
+  expect(first.exitCode).toBe(0);
+  expect(first.out).not.toContain("Note: cluster");
+  // Older target files can omit the cluster label.
+  writeFileSync(`${projectDir}/instances.yml`, instances().replace("cluster: default", ""));
+  const second = run(["add", "second"], { PGAI_DB_URL: other });
+  expect(second.exitCode).toBe(0);
+  expect(second.out).toContain("Monitoring target 'second' added\nNote: cluster 'default' already has target 'first'. Reports treat the targets of one cluster as one primary and its standbys. If this server is not part of that replication cluster, add it with --cluster <name>.");
+  const repeated = run(["add", "second"], { PGAI_DB_URL: other });
+  expect(repeated.exitCode).toBe(0);
+  expect(repeated.out).toContain("already exists");
+  expect(repeated.out).not.toContain("Note: cluster");
+  const separate = run(["add", "separate", "--cluster", "independent"], { PGAI_DB_URL: url });
+  expect(separate.exitCode).toBe(0);
+  expect(separate.out).not.toContain("Note: cluster");
+  for (const name of ["third", "fourth", "fifth"]) {
+    expect(run(["add", name], { PGAI_DB_URL: url }).exitCode).toBe(0);
+  }
+  const sixth = run(["add", "sixth"], { PGAI_DB_URL: url });
+  expect(sixth.exitCode).toBe(0);
+  expect(sixth.out).toContain("Note: cluster 'default' already has targets 'first', 'second', 'third' and 2 more.");
+  expect(sixth.out).not.toContain("'fourth'");
+  expect(sixth.out).not.toContain("'fifth'");
+});

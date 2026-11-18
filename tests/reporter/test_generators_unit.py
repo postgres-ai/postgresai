@@ -432,7 +432,7 @@ def test_get_all_databases_merges_sources(monkeypatch: pytest.MonkeyPatch, gener
                 "status": "success",
                 "data": {
                     "result": [
-                        {"metric": {"dbname": "warehouse"}, "value": [0, "1"]},
+                        {"metric": {"dbname": "warehouse-target", "real_dbname": "warehouse"}, "value": [0, "1"]},
                     ]
                 },
             }
