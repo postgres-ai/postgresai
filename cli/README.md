@@ -611,12 +611,14 @@ postgresai mon targets test <name>                # Test target connectivity
 ```
 
 The first report after startup ends its window at run time; later reports end at the previous full hour.
+Failed attempts keep the current-time window until a report succeeds.
 Targets in one replication cluster should share `--cluster`; use different names for unrelated servers.
 Adding a new target to a cluster that already has targets prints a note naming up to three of them.
 For existing targets, edit `custom_tags.cluster` in `instances.yml`. An add with a different cluster
 is refused; an add without `--cluster` preserves an existing target's cluster.
-The reporter keeps the first primary by node name and omits additional primaries with a warning;
-it never lists an additional primary as a standby.
+The reporter keeps the first confirmed primary by node name and omits additional confirmed primaries
+with a warning. Nodes with unknown roles are named in one warning and kept in the report: the first
+fills the primary slot if no primary is confirmed, and the rest are listed as standbys.
 
 #### Configuration and maintenance
 ```bash

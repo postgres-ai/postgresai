@@ -7110,21 +7110,23 @@ class PostgresReportGenerator:
 
         # Use pgwatch_db_stats_in_recovery_int to determine primary vs standby
         # in_recovery = 0 means primary, in_recovery = 1 means standby
+        unknown_nodes = []
         for node_name in node_list:
             recovery_query = f'last_over_time(pgwatch_db_stats_in_recovery_int{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
             recovery_result = self.query_instant(recovery_query)
 
-            is_standby = False
-            if recovery_result.get('status') == 'success' and recovery_result.get('data', {}).get('result'):
-                if recovery_result['data']['result']:
-                    in_recovery_value = float(recovery_result['data']['result'][0]['value'][1])
-                    is_standby = (in_recovery_value > 0)
-                    logger.info(f"Node '{node_name}': in_recovery={int(in_recovery_value)} ({'standby' if is_standby else 'primary'})")
+            if recovery_result.get('status') != 'success' or not recovery_result.get('data', {}).get('result'):
+                unknown_nodes.append(node_name)
+                continue
+
+            in_recovery_value = float(recovery_result['data']['result'][0]['value'][1])
+            is_standby = (in_recovery_value > 0)
+            logger.info(f"Node '{node_name}': in_recovery={int(in_recovery_value)} ({'standby' if is_standby else 'primary'})")
 
             if is_standby:
                 nodes["standbys"].append(node_name)
             else:
-                # First non-standby node becomes primary
+                # First confirmed primary wins over any unknown role.
                 if nodes["primary"] is None:
                     nodes["primary"] = node_name
                 else:
@@ -7133,6 +7135,16 @@ class PostgresReportGenerator:
                         f"omitting '{node_name}' from this report, not listing it as a standby. "
                         "Assign unrelated nodes separate clusters with mon targets add --cluster <name> "
                         "(custom_tags.cluster in instances.yml for existing targets).")
+
+        if unknown_nodes:
+            logger.warning(f"Nodes with unknown roles in cluster '{cluster}' (no recovery data): {unknown_nodes}")
+            # Preserve the old fallback without displacing a confirmed primary.
+            for node_name in unknown_nodes:
+                if nodes["primary"] is None:
+                    nodes["primary"] = node_name
+                else:
+                    nodes["standbys"].append(node_name)
+            nodes["standbys"].sort()
 
         logger.info(f"Result: primary={nodes['primary']}, replicas={nodes['standbys']}")
         return nodes

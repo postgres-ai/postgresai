@@ -611,6 +611,32 @@ class TestGetAllNodesContract:
 
         result = generator.get_all_nodes("test-cluster")
 
-        # Contract: the first becomes the primary; another primary is never a standby (#406)
+        # Contract: the first confirmed primary wins; extra confirmed primaries are omitted (#406).
         assert result["primary"] == "node-01"
         assert result["standbys"] == []
+
+    @pytest.mark.parametrize("confirmed_primary", [None, "node-02"])
+    def test_unknown_roles_keep_the_existing_schema(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        generator: PostgresReportGenerator,
+        prom_result: Callable,
+        confirmed_primary: Optional[str],
+    ) -> None:
+        """Unknown roles remain reportable, but cannot displace a confirmed primary."""
+        def mock_query(query: str) -> Dict:
+            if "pgwatch_settings_configured" in query:
+                return prom_result([
+                    {"metric": {"node_name": "node-01"}},
+                    {"metric": {"node_name": "node-02"}},
+                ])
+            if confirmed_primary and f'node_name="{confirmed_primary}"' in query:
+                return prom_result([{"value": [0, "0"]}])
+            return prom_result([])
+
+        monkeypatch.setattr(generator, "query_instant", mock_query)
+
+        assert generator.get_all_nodes("test-cluster") == {
+            "primary": confirmed_primary or "node-01",
+            "standbys": ["node-01" if confirmed_primary else "node-02"],
+        }

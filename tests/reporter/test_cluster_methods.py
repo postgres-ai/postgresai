@@ -189,6 +189,46 @@ def test_independent_primary_is_never_a_standby(generator):
     assert "omitting 'illdb3'" in message
 
 
+@pytest.mark.parametrize("unknown_response", [
+    {"status": "success", "data": {"result": []}},
+    {"status": "error", "error": "Recovery query failed"},
+], ids=["missing", "failed"])
+@pytest.mark.parametrize(("roles", "expected"), [
+    ({"a": None, "b": "0"}, {"primary": "b", "standbys": ["a"]}),
+    ({"a": "0", "b": None}, {"primary": "a", "standbys": ["b"]}),
+    ({"a": None, "b": None}, {"primary": "a", "standbys": ["b"]}),
+    ({"a": None, "b": "1", "c": None}, {"primary": "a", "standbys": ["b", "c"]}),
+    ({"a": None, "b": "0", "c": "1", "d": None, "e": "0"},
+     {"primary": "b", "standbys": ["a", "c", "d"]}),
+])
+def test_unknown_roles_preserve_nodes_and_prefer_confirmed_primary(generator, unknown_response, roles, expected):
+    def query(q):
+        if "pgwatch_settings_configured" in q:
+            rows = [{"metric": {"node_name": n}} for n in reversed(roles)]
+        else:
+            node = next(n for n in roles if f'node_name="{n}"' in q)
+            if roles[node] is None:
+                return unknown_response
+            rows = [{"value": [1, roles[node]]}]
+        return {"status": "success", "data": {"result": rows}}
+
+    with patch.object(generator, "query_instant", side_effect=query), patch("reporter.postgres_reports.logger.warning") as warning:
+        assert generator.get_all_nodes("default") == expected
+    messages = [call.args[0] for call in warning.call_args_list]
+    unknown_messages = [message for message in messages if "unknown" in message.lower()]
+    assert len(unknown_messages) == 1
+    assert "default" in unknown_messages[0]
+    for node, role in roles.items():
+        assert (f"'{node}'" in unknown_messages[0]) == (role is None)
+    omitted = [message for message in messages if "omitting" in message]
+    if "e" in roles:
+        assert len(omitted) == 1
+        assert "omitting 'e'" in omitted[0]
+        assert "--cluster" in omitted[0]
+    else:
+        assert omitted == []
+
+
 def test_index_overlap_does_not_match_another_databases_target_name(generator):
     rows = [{"metric": {"dbname": "illdb", "real_dbname": "other", "schema_name": "public", "index_name": "i"}}]
     with patch.object(generator, "query_instant", return_value={"status": "success", "data": {"result": rows}}):

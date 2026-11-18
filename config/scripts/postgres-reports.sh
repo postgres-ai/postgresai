@@ -115,7 +115,7 @@ if [[ "${readiness_timeout_seconds}" =~ ^[0-9]+$ ]] && (( readiness_timeout_seco
     "${readiness_timeout_seconds}" "${readiness_poll_seconds}" || true
 fi
 
-# The first run ends its window now: the previous full hour can predate collection.
+# Until a report succeeds, end its window now: the previous full hour can predate collection.
 # Later runs keep the hour-aligned window unless USE_CURRENT_TIME=true.
 first_run=true
 while true; do
@@ -124,7 +124,6 @@ while true; do
   if [[ "${use_current_time}" == "true" || "${first_run}" == "true" ]]; then
     reporter_args+=(--use-current-time)
   fi
-  first_run=false
 
   # Project name: env var > config file, read each cycle: a platform-provisioned
   # box learns its project only when the platform adopts the instance, after
@@ -154,6 +153,7 @@ while true; do
   fi
 
   if python -m reporter.postgres_reports "${reporter_args[@]}"; then
+    first_run=false
     echo "postgres-reports: sleeping ${interval_seconds}s"
     sleep_seconds "${interval_seconds}"
   else
