@@ -394,7 +394,14 @@ def wrap(sql, cols, legend, extra, ash=False, legend_column="series", label_set=
         assert set(cols) == {"labels", "t", "value"}
         tail = "SELECT labels, t, value FROM r JOIN names USING (k)"
         assert sql.endswith(tail), "ash_by.sql output changed"
-        names = ["q.k", f"{legend_expr(legend, cols)} AS {legend_column}"]
+        leg = legend_expr(legend, cols)
+        if not label_set:
+            # Without label_set the legend text is the series' identity. Two groups can render to
+            # the same text when a label value holds the legend's separator: number the later
+            # ones. Done once per group, not per point.
+            dup = f"row_number() OVER (PARTITION BY {leg} ORDER BY q.k)"
+            leg = f"{leg} || CASE WHEN {dup} > 1 THEN ' #' || {dup} ELSE '' END"
+        names = ["q.k", f"{leg} AS {legend_column}"]
         names += [f"{label_expr(cols, x)} AS {x}" for x in extra]
         if label_set:
             names.append(f"{auto_legend(cols)} AS label_set")

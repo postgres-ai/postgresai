@@ -213,9 +213,12 @@ def test_ash_label_dictionary_matches_per_row_formatting(pgai_mon):
                       legend_column="__series", label_set=False,
                       by=["wait_event_type", "wait_event", "query_id"]))
     assert "error" not in compact, compact
-    renamed = [dict(time=r["time"], value=r["value"], series=r["__series"]) for r in compact["rows"]]
+    # Without label_set, groups with equal legends (here: no labels, and NULL labels) are numbered.
+    plain_name = lambda s: re.sub(r" #\d+$", "", s)
+    renamed = [dict(time=r["time"], value=r["value"], series=plain_name(r["__series"])) for r in compact["rows"]]
     expected = [{k: v for k, v in r.items() if k != "label_set"} for r in plain["rows"]]
     assert ordered(renamed) == ordered(expected)
+    assert len({r["__series"] for r in compact["rows"]}) == 6
 
 
 
@@ -253,6 +256,23 @@ def test_ash_csv_matches_objects(pgai_mon, dashboard, panel_id):
         # CSV represents SQL NULL as an empty field, including an absent query_id link label.
         expected = [{k: "" if v is None else v for k, v in row.items()} for row in objects["rows"]]
         assert ordered(rows) == ordered(expected)
+
+
+def test_ash_equal_legends_stay_apart(pgai_mon):
+    """Without label_set the legend text is a series' identity: two groups that render to the same
+    text (a label value that holds the separator) are numbered, not merged."""
+    tail = "SELECT labels, t, value FROM r JOIN names USING (k)"
+    inner = ("WITH r AS (SELECT * FROM (VALUES (['IO', 'a - b'], 1000, 1.0), (['IO - a', 'b'], 1000, 2.0), "
+             "(['Lock', 'x'], 1000, 3.0)) v(k, t, value)), "
+             "names AS (SELECT k, map(['wait_event_type', 'wait_event'], k) AS labels "
+             "FROM (SELECT DISTINCT k FROM r))\n" + tail)
+    by = ["wait_event_type", "wait_event"]
+    sql = DC.wrap(inner, ["labels", "t", "value"], "{{wait_event_type}} - {{wait_event}}", [], ash=True,
+                  legend_column="__series", label_set=False, by=by)
+    got = CP.post(pgai_mon, sql)
+    assert "error" not in got, got
+    assert sorted((r["__series"], r["value"]) for r in got["rows"]) == [
+        ("IO - a - b", 1.0), ("IO - a - b #2", 2.0), ("Lock - x", 3.0)]
 
 
 def test_grafana_e2e_sends_csv_target_unchanged(monkeypatch):

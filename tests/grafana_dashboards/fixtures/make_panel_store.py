@@ -80,8 +80,8 @@ def recorded(url, t0, t1):
     out = []
     metrics = [r["metric"] for r in post(url, "SELECT DISTINCT metric FROM series ORDER BY 1")]
     for m in metrics:
-        rows, page = [], 20000
-        while True:  # pages: a response is capped in rows and bytes
+        rows, page = [], 5000
+        while True:  # pages: a response is capped in rows and bytes (http.chart_max_bytes, 5 MiB)
             got = post(url, f"SELECT series_id, CAST(labels AS JSON) AS labels, CAST(epoch_ms(ts) AS BIGINT) AS t, value "
                             f"FROM pgai_samples('{m}', {keep_matchers()}, {t0}, {t1}) WHERE NOT stale "
                             f"ORDER BY series_id, ts LIMIT {page} OFFSET {len(rows)}")

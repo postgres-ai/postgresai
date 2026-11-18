@@ -1171,6 +1171,10 @@ impl Reader {
                                 }
                                 crate::rowcsv::push_value(&mut s, c.as_ref(), i);
                             }
+                            if s.is_empty() {
+                                // one column, NULL or '': a blank line is no row to a CSV reader
+                                s.push_str("\"\"");
+                            }
                             s.push_str("\r\n");
                             bytes += s.len();
                             if bytes > max_bytes {

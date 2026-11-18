@@ -56,6 +56,8 @@ The SQL template's final SELECT is also used directly by the evaluator compariso
 The three grouped wait-event targets (dashboard 03 panel 19, dashboard 04 panels 2 and 3)
 use Infinity's backend CSV parser with an empty root selector. They omit `label_set` only when
 the compiler verifies that the legend names every grouping label; an incomplete legend keeps it.
+Two groups whose legends are still equal (a label value that holds the legend's separator) are
+numbered (` #2`), once per group, so they stay two series.
 Their legend column is `__series`, and the display-name override reads that label: Infinity sorts
 fields by label keys and values, so this key sorts before `query_id` and keeps wait-event type,
 event and query groups together in the stack. SQL still orders by time so Infinity can build a

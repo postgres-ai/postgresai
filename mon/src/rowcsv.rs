@@ -26,21 +26,34 @@ pub fn push_value(out: &mut String, a: &dyn Array, i: usize) {
         DataType::Utf8 => push_field(out, a.as_any().downcast_ref::<StringArray>().unwrap().value(i)),
         DataType::LargeUtf8 => push_field(out, a.as_any().downcast_ref::<LargeStringArray>().unwrap().value(i)),
         DataType::Timestamp(unit, _) => {
-            let ms = match unit {
-                TimeUnit::Second => {
-                    i128::from(a.as_any().downcast_ref::<TimestampSecondArray>().unwrap().value(i)) * 1000
-                }
-                TimeUnit::Millisecond => {
-                    i128::from(a.as_any().downcast_ref::<TimestampMillisecondArray>().unwrap().value(i))
-                }
-                TimeUnit::Microsecond => {
-                    i128::from(a.as_any().downcast_ref::<TimestampMicrosecondArray>().unwrap().value(i) / 1000)
-                }
-                TimeUnit::Nanosecond => {
-                    i128::from(a.as_any().downcast_ref::<TimestampNanosecondArray>().unwrap().value(i) / 1_000_000)
-                }
+            let (v, per_ms) = match unit {
+                TimeUnit::Second => (
+                    a.as_any().downcast_ref::<TimestampSecondArray>().unwrap().value(i),
+                    -1000,
+                ),
+                TimeUnit::Millisecond => (
+                    a.as_any().downcast_ref::<TimestampMillisecondArray>().unwrap().value(i),
+                    1,
+                ),
+                TimeUnit::Microsecond => (
+                    a.as_any().downcast_ref::<TimestampMicrosecondArray>().unwrap().value(i),
+                    1000,
+                ),
+                TimeUnit::Nanosecond => (
+                    a.as_any().downcast_ref::<TimestampNanosecondArray>().unwrap().value(i),
+                    1_000_000,
+                ),
             };
-            let _ = write!(out, "{ms}");
+            // DuckDB's infinite timestamps are +/- i64::MAX (rowjson.rs): not a number of milliseconds
+            if v == i64::MAX {
+                out.push_str("infinity");
+            } else if v == -i64::MAX || v == i64::MIN {
+                out.push_str("-infinity");
+            } else if per_ms < 0 {
+                let _ = write!(out, "{}", i128::from(v) * 1000);
+            } else {
+                let _ = write!(out, "{}", v / per_ms);
+            }
         }
         _ => {
             // Reuse numeric and nested-value formatting; remove JSON string escaping before CSV quoting.

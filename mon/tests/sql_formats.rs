@@ -43,6 +43,17 @@ fn csv_encodes_values_and_headers() {
         r.run_fmt("SELECT 1 AS x WHERE false", Fmt::Csv).unwrap().csv.unwrap(),
         "x\r\n"
     );
+    // One empty field is written as "": a CSV reader skips a blank line.
+    let one = |sql: &str| r.run_fmt(sql, Fmt::Csv).unwrap().csv.unwrap();
+    assert_eq!(
+        one("SELECT * FROM (VALUES (NULL), (''), ('a')) v(x)"),
+        "x\r\n\"\"\r\n\"\"\r\na\r\n"
+    );
+    // Infinite timestamps are not a number of milliseconds.
+    assert_eq!(
+        one("SELECT 'infinity'::TIMESTAMP AS a, '-infinity'::TIMESTAMP AS b, 'infinity'::TIMESTAMP_S AS c"),
+        "a,b,c\r\ninfinity,-infinity,infinity\r\n"
+    );
 }
 
 #[test]
