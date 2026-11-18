@@ -621,12 +621,15 @@ Standbys join the primary with the same PostgreSQL system identifier (`sys_id`),
 Unassignable standbys and nodes with unknown roles stay with the first primary by node name; a warning names them.
 Split units use `<cluster>/<primary node>` in per-query `cluster_id`, with URL-encoded file prefixes
 (for example, `default%2Fnode-01_A002.json`), and each gets a separate platform report.
+Ordinary cluster prefixes stay unchanged. If a split prefix collides, it gets a deterministic
+numeric suffix (`_2`, `_3`, ...), shared by its report files, query files, and upload filenames.
 A label with one primary keeps its existing names and node grouping. With no confirmed primary,
 the first unknown-role node fills the primary slot and the rest are listed as standbys.
 
 An empty check result includes `available` and `reason`. Without source rows, it says what could be
 missing rather than claiming there are no issues. Index checks say `available: true` with "nothing
-found" only when their source had rows and all were excluded as system indexes.
+found" only when their source returned rows for every covered database and all were excluded as
+system indexes. A failed, missing, or empty source result for any database keeps it unavailable.
 
 #### Configuration and maintenance
 ```bash
@@ -1209,7 +1212,7 @@ Beyond the check-specific `results`, every report includes:
 |-------|---------|
 | `data` | The check's findings, usually keyed by database. `{}` when there are none. |
 | `postgres_version` | `{ version, server_version_num, server_major_ver, server_minor_ver }` (most checks). |
-| `available` | Full mode only, and only when `data` is empty (contract 1.1.0). `false`: the report cannot say — not collected yet, the query failed, or a metric that records only findings has none. `true`: the check's metric had rows for the node and none was a finding. |
+| `available` | Full mode only, and only when `data` is empty (contract 1.1.0). `false`: the report cannot say — not collected yet, the query failed, or a metric that records only findings has none. `true`: the check's metric returned rows for every covered database on the node and none was a finding. |
 | `reason` | Full mode only, next to `available`: one plain sentence for the reader. |
 
 Express mode does not emit `available` or `reason`: it queries the database directly, and its

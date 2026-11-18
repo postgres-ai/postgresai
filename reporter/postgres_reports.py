@@ -244,7 +244,7 @@ _SYSTEM_TEMP_SCHEMA_RE = re.compile(r"^pg_(toast_)?temp_")
 # `data: {}` said nothing). An empty node result gets `available` and `reason`.
 # `available: false`: the report cannot tell "nothing found" from "not collected
 # yet" or "the query failed". `available: true`: the check's source metric had
-# rows for the node and the report kept none of them; the generator passes that
+# rows for every covered database and the report kept none; the generator passes that
 # evidence as `collected=True`.
 _QUERY_STATS_REASON = (
     "No query statistics in the window. The monitoring records a query from pg_stat_statements once it has "
@@ -263,7 +263,7 @@ EMPTY_REPORT_REASONS = {
     "H004": "No redundant index in the collected metrics: there is none, the collection has not run yet, or the metrics query failed.",
 }
 _DEFAULT_EMPTY_REASON = "No data for this check in the collected metrics yet."
-# The source metric had rows for the node, and the report dropped them all (system-schema indexes).
+# The source metric had rows for every database, all dropped as system-schema indexes.
 # F004/F005 keep every row they read, so for them rows always mean data.
 FOUND_NOTHING_REASONS = {
     "H001": "No invalid indexes found in the collected metrics.",
@@ -1648,7 +1648,7 @@ class PostgresReportGenerator:
                 database_sizes[db_name] = size_bytes
 
         invalid_indexes_by_db = {}
-        collected = False  # the source metric had rows for this node
+        collected = bool(databases)  # every database needs source rows to support an all-clear
         for db_name in databases:
             # Fetch index definitions from the sink for this database (used to aid remediation)
             index_definitions = self.get_index_definitions_from_sink(db_name)
@@ -1665,8 +1665,9 @@ class PostgresReportGenerator:
             # Build index data keyed by (schema_name, table_name, index_name)
             indexes_data: Dict[tuple, Dict[str, Any]] = {}
 
-            if size_result.get('status') == 'success' and size_result.get('data', {}).get('result'):
-                collected = True
+            db_collected = size_result.get('status') == 'success' and bool(size_result.get('data', {}).get('result'))
+            collected = collected and db_collected
+            if db_collected:
                 for item in size_result['data']['result']:
                     schema_name = item['metric'].get('schema_name', 'unknown')
                     table_name = item['metric'].get('table_name', 'unknown')
@@ -1892,7 +1893,7 @@ class PostgresReportGenerator:
                 postmaster_startup_time = datetime.fromtimestamp(postmaster_startup_epoch).isoformat()
 
         unused_indexes_by_db = {}
-        collected = False  # the source metric had rows for this node
+        collected = bool(databases)  # every database needs source rows to support an all-clear
         for db_name in databases:
             # Get index definitions from Postgres sink database for this specific database
             index_definitions = self.get_index_definitions_from_sink(db_name)
@@ -1926,8 +1927,9 @@ class PostgresReportGenerator:
                 f'min_over_time(timestamp(pgwatch_unused_indexes_idx_scan{{{db_sel}}})[{self.H002_LOOKBACK}:{self.H002_STEP}])')
 
             unused_indexes = []
-            if unused_result.get('status') == 'success' and unused_result.get('data', {}).get('result'):
-                collected = True
+            db_collected = unused_result.get('status') == 'success' and bool(unused_result.get('data', {}).get('result'))
+            collected = collected and db_collected
+            if db_collected:
                 for item in unused_result['data']['result']:
                     schema_name = item['metric'].get('schema_name', 'unknown')
                     table_name = item['metric'].get('table_name', 'unknown')
@@ -2149,7 +2151,7 @@ class PostgresReportGenerator:
                 database_sizes[db_name] = size_bytes
 
         redundant_indexes_by_db = {}
-        collected = False  # the source metric had rows for this node
+        collected = bool(databases)  # every database needs source rows to support an all-clear
         for db_name in databases:
             # Fetch index definitions from the sink for this database (used to aid remediation)
             index_definitions = self.get_index_definitions_from_sink(db_name)
@@ -2174,8 +2176,8 @@ class PostgresReportGenerator:
             total_size = 0
             real_db = db_name
 
+            collected = collected and bool(candidates)
             if candidates:
-                collected = True
                 for item in candidates:
                     schema_name = item['metric'].get('schema_name', 'unknown')
                     table_name = item['metric'].get('table_name', 'unknown')
@@ -6046,7 +6048,7 @@ class PostgresReportGenerator:
             host: Primary host identifier (used if all_hosts not provided)
             all_hosts: Optional dict with 'primary' and 'standbys' keys for multi-node reports
             postgres_version: Optional Postgres version info to include at report level
-            collected: The check's source metric had rows for the node. Only then does an
+            collected: The check's source metric returned rows for every covered database. Only then does an
                 empty report say "nothing found" (`available: true`).
 
         Returns:
@@ -6946,7 +6948,8 @@ class PostgresReportGenerator:
                                  token: str = None,
                                  report_id: str = None,
                                  reporting_nodes: Optional[Dict[str, Any]] = None,
-                                 report_cluster: Optional[str] = None) -> List[Dict[str, Any]]:
+                                 report_cluster: Optional[str] = None,
+                                 file_prefix: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Generate individual JSON files for each query mentioned in hourly reports.
         Fetches all metrics directly from Prometheus (matching Dashboard 3).
@@ -6961,6 +6964,7 @@ class PostgresReportGenerator:
             include_cluster_prefix: If True, prefix per-query filenames with "<cluster>_".
             reporting_nodes: Nodes of one reporting unit; no second topology discovery
             report_cluster: Output identity of that unit; cluster remains the metric label
+            file_prefix: Filename prefix allocated across all reporting units of this run
             api_url: API URL for uploads (only used if write_immediately is True)
             token: API token for uploads (only used if write_immediately is True)
             report_id: Report ID for uploads (only used if write_immediately is True)
@@ -7070,7 +7074,9 @@ class PostgresReportGenerator:
             # - Single-cluster: query_<queryid>.json
             # - Multi-cluster:  <cluster>_query_<queryid>.json
             output_cluster = report_cluster if report_cluster is not None else cluster
-            prefix = quote(output_cluster, safe="") if output_cluster != cluster else cluster
+            prefix = file_prefix
+            if prefix is None:
+                prefix = quote(output_cluster, safe="") if output_cluster != cluster else cluster
             filename = f"{prefix}_query_{queryid}.json" if include_cluster_prefix else f"query_{queryid}.json"
 
             # Build the final JSON object (keep timestamptz as the last field)
@@ -7656,11 +7662,26 @@ def main():
             else:
                 reporting_units.append((cluster, cluster, None))
 
+        # Reserve ordinary names first, including names that look like a split unit's suffix.
+        used_prefixes = {cluster for cluster, report_cluster, _ in reporting_units if cluster == report_cluster}
+        file_prefixes = {}
+        for cluster, report_cluster, _ in sorted(reporting_units, key=lambda unit: (unit[0], unit[1])):
+            prefix = cluster
+            if report_cluster != cluster:
+                base = quote(report_cluster, safe="")
+                prefix = base
+                suffix = 2
+                while prefix in used_prefixes:
+                    prefix = f"{base}_{suffix}"
+                    suffix += 1
+                used_prefixes.add(prefix)
+            file_prefixes[(cluster, report_cluster)] = prefix
+
         # Keep the metric label separate from the reporting unit's output name.
         for cluster, report_cluster, reporting_nodes in reporting_units:
             logger.info("=" * 60)
             logger.info(f"Processing reporting unit: {report_cluster}")
-            file_prefix = quote(report_cluster, safe="") if report_cluster != cluster else cluster
+            file_prefix = file_prefixes[(cluster, report_cluster)]
             logger.info("=" * 60)
 
             # Set default node_name if not provided and not combining nodes
@@ -7699,6 +7720,7 @@ def main():
                         write_immediately=True,
                         include_cluster_prefix=(len(reporting_units) > 1),
                         reporting_nodes=reporting_nodes, report_cluster=report_cluster,
+                        file_prefix=file_prefix,
                         api_url=args.api_url if (not args.no_upload and report_id) else None,
                         token=args.token if (not args.no_upload and report_id) else None,
                         report_id=report_id if (not args.no_upload and report_id) else None

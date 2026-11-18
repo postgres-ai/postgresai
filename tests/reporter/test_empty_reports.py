@@ -223,6 +223,39 @@ def test_index_checks_say_found_nothing_only_with_rows(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("check_id", sorted(INDEX_METRICS))
+@pytest.mark.parametrize("db2_result", ["error", "empty", "missing", "rows"])
+@pytest.mark.parametrize("databases", [["db1", "db2"], ["db2", "db1"], []])
+def test_empty_index_checks_require_every_database(
+    monkeypatch, generator, check_id, db2_result, databases
+) -> None:
+    method, metric, db_label = INDEX_METRICS[check_id]
+
+    def query(query):
+        if metric in query:
+            if f'{db_label}="db2"' in query and db2_result != "rows":
+                return {
+                    "error": {"status": "error", "error": "source query failed"},
+                    "empty": {"status": "success", "data": {"result": []}},
+                    "missing": {"status": "success"},
+                }[db2_result]
+            rows = _index_series(db_label, "pg_catalog")
+            rows[0]["metric"][db_label] = "db2" if f'{db_label}="db2"' in query else "db1"
+            return {"status": "success", "data": {"result": rows}}
+        return {"status": "success", "data": {"result": []}}
+
+    monkeypatch.setattr(generator, "get_all_databases", lambda *args: databases)
+    monkeypatch.setattr(generator, "_get_postgres_version_info", lambda *args: PG)
+    monkeypatch.setattr(generator, "query_instant", query)
+    report = getattr(generator, method)("local", "node-1")
+    node = report["results"]["node-1"]
+    assert node["data"] == {}
+    available = bool(databases) and db2_result == "rows"
+    assert _annotation(node) == (available, (FOUND_NOTHING if available else NOT_COLLECTED)[check_id])
+    validate_report(report)
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(("use_current_time", "has_data"), [(False, False), (True, True)])
 def test_a_box_younger_than_the_hour_has_query_data_only_with_the_current_time(
     monkeypatch: pytest.MonkeyPatch, use_current_time: bool, has_data: bool

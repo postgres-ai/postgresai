@@ -79,7 +79,7 @@ def test_system_identifier_survives_the_sql_query_path(generator, monkeypatch):
     ]
 
 
-def _fixed_builders(monkeypatch, generator):
+def _fixed_builders(monkeypatch, generator, clusters=('default',)):
     """Exercise the real report assembly with fixed, nonempty per-check facts."""
     class Frozen(datetime):
         @classmethod
@@ -94,7 +94,7 @@ def _fixed_builders(monkeypatch, generator):
         signature = inspect.signature(method)
         def builder(*args, _signature=signature, _check=check, **kwargs):
             bound = _signature.bind(*args, **kwargs)
-            assert bound.arguments.get('cluster', 'default') == 'default'
+            assert bound.arguments.get('cluster', 'default') in clusters
             node = bound.arguments['node_name']
             return generator.format_report_data(_check, {'fact': node}, node)
         monkeypatch.setattr(generator, name, builder)
@@ -110,14 +110,24 @@ def test_single_primary_reports_are_byte_identical(topology, monkeypatch):
     assert hashlib.sha256(json.dumps(reports, indent=2).encode()).hexdigest() == '7d00f52dfb420c904b4be989cab8edd3f88cda5a9fb7ed7987e7de182494ec3e'
 
 
-def test_main_writes_and_uploads_each_unit(topology, monkeypatch, tmp_path):
+@pytest.mark.parametrize('extra_clusters', [(), ('default%2Fp1',), ('default%2Fp1', 'default%2Fp1_2')])
+@pytest.mark.parametrize('reverse', [False, True])
+def test_main_writes_and_uploads_each_unit(topology, monkeypatch, tmp_path, extra_clusters, reverse):
     gen = topology({'p1': 0, 'p2': 0, 's': 1}, {'p1': ['1'], 'p2': ['2'], 's': ['2']})
-    _fixed_builders(monkeypatch, gen)
+    clusters = ['default', *extra_clusters]
+    if reverse:
+        clusters.reverse()
+    _fixed_builders(monkeypatch, gen, clusters)
+    discover = gen.get_reporting_units
+    monkeypatch.setattr(gen, 'get_all_clusters', lambda: clusters)
+    monkeypatch.setattr(gen, 'get_reporting_units', lambda c: discover(c) if c == 'default' else [
+        {'cluster': c, 'nodes': {'primary': 'ordinary', 'standbys': []}},
+    ])
     monkeypatch.setattr(gen, 'test_connection', lambda: True)
     monkeypatch.setattr(gen, 'extract_queryids_from_reports', lambda reports: {'db': {'42'}})
     text_nodes = []
     def texts(*args, cluster, node_name, **kwargs):
-        assert cluster == 'default'
+        assert cluster in clusters
         text_nodes.append(node_name)
         return {'db': {'42': f'select {node_name}'}}
     monkeypatch.setattr(gen, 'get_queryid_queries_from_sink', texts)
@@ -127,7 +137,7 @@ def test_main_writes_and_uploads_each_unit(topology, monkeypatch, tmp_path):
         return {'calls': 1}
     monkeypatch.setattr(gen, 'get_query_metrics_from_prometheus', metrics)
     calls = []
-    report_ids = iter([101, 102])
+    report_ids = iter(range(101, 103 + len(extra_clusters)))
     def request(api, endpoint, data):
         calls.append((endpoint, data))
         if endpoint == '/rpc/checkup_report_create':
@@ -138,13 +148,23 @@ def test_main_writes_and_uploads_each_unit(topology, monkeypatch, tmp_path):
     monkeypatch.setattr(postgres_reports, 'make_request', request)
     factory = Mock(return_value=gen, DEFAULT_EXCLUDED_DATABASES=gen.DEFAULT_EXCLUDED_DATABASES)
     monkeypatch.setattr(postgres_reports, 'PostgresReportGenerator', factory)
-    monkeypatch.setattr(sys, 'argv', ['reporter', '--cluster', 'default', '--project-name', 'proj', '--token', 'test-token'])
+    monkeypatch.setattr(sys, 'argv', ['reporter', '--project-name', 'proj', '--token', 'test-token'])
     monkeypatch.chdir(tmp_path)
     postgres_reports.main()
     uploads = [data for endpoint, data in calls if endpoint == '/rpc/checkup_report_file_post']
-    for primary, standbys, report_id in [('p1', [], 101), ('p2', ['s'], 102)]:
-        prefix = f'default%2F{primary}'
-        paths = sorted(tmp_path.glob(prefix + '_*.json'))
+    expected_units = []
+    for cluster in clusters:
+        if cluster == 'default':
+            suffix = f'_{len(extra_clusters) + 1}' if extra_clusters else ''
+            expected_units.extend([
+                ('default%2Fp1' + suffix, 'default/p1', 'p1', []),
+                ('default%2Fp2', 'default/p2', 'p2', ['s']),
+            ])
+        else:
+            expected_units.append((cluster, cluster, 'ordinary', []))
+    assert len(list(tmp_path.glob('*.json'))) == 30 * len(expected_units)
+    for report_id, (prefix, output_cluster, primary, standbys) in enumerate(expected_units, 101):
+        paths = [tmp_path / u['filename'] for u in uploads if u['checkup_report_id'] == report_id]
         assert len(paths) == 30  # 29 checks and one query file
         for path in paths:
             data = json.loads(path.read_text())
@@ -155,11 +175,13 @@ def test_main_writes_and_uploads_each_unit(topology, monkeypatch, tmp_path):
             assert upload['check_id'] == data.get('checkId', '')
             assert upload['generate_issue'] == ('checkId' in data)
         query = json.loads((tmp_path / f'{prefix}_query_42.json').read_text())
-        assert query['cluster_id'] == f'default/{primary}'
-        assert query['query_text'] == f'select {primary}'
-    assert text_nodes == ['p1', 'p2', 's']
-    assert queried == [('default', 'p1'), ('default', 'p2'), ('default', 's')]
-    assert sum(endpoint == '/rpc/checkup_report_create' for endpoint, _ in calls) == 2
+        assert query['cluster_id'] == output_cluster
+        assert query['query_text'] == f'select {primary if primary != "ordinary" else None}'
+        assert all(path.name.startswith(prefix + '_') for path in paths)
+    assert [node for node in text_nodes if node is not None] == ['p1', 'p2', 's']
+    assert text_nodes.count(None) == len(extra_clusters)
+    assert [entry for entry in queried if entry[0] == 'default'] == [('default', 'p1'), ('default', 'p2'), ('default', 's')]
+    assert sum(endpoint == '/rpc/checkup_report_create' for endpoint, _ in calls) == len(expected_units)
     statuses = [(data['report_id'], data['status']) for endpoint, data in calls
                 if endpoint == '/rpc/checkup_report_status_update']
-    assert statuses == [(101, 'completed'), (102, 'completed')]
+    assert statuses == [(report_id, 'completed') for report_id in range(101, 101 + len(expected_units))]
