@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { load } from "js-yaml";
@@ -275,4 +275,13 @@ test.each([
   expect(added.exitCode, added.out).toBe(0);
   expect(envFile()).not.toContain("RDS_DB_INSTANCE_IDENTIFIER");
   expect(added.out).toContain("Host metrics: add the RDS instance endpoint");
+});
+
+
+test("target commands create the host-metrics bind source before starting services", () => {
+  expect(existsSync(`${projectDir}/host-metrics`)).toBe(false);
+  const added = run(["add", rds, "rds1"]);
+  expect(added.exitCode, added.out).toBe(0);
+  expect(statSync(`${projectDir}/host-metrics`).isDirectory()).toBe(true);
+  expect(statSync(`${projectDir}/host-metrics`).mode & 0o777).toBe(0o700);
 });

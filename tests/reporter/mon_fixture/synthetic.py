@@ -63,6 +63,42 @@ def host():
         yield series(name, NODE, ts, [wave(i, lo, hi, 53, ph) for i in range(len(ts))])
 
 
+def resource_sizing_and_spills():
+    """RDS/ClickHouse resizes, credit balances, and one statement that spills."""
+    ts = grid(AT_MS - 8 * DAY, AT_MS, 60_000)
+    cut = AT_MS - 12 * 3_600_000
+    for cls, times in (("db.t4g.medium", [t for t in ts if t < cut]),
+                       ("db.t4g.large", [t for t in ts if t >= cut])):
+        labels = dict(NODE, instance_class=cls, engine="postgres", storage_type="gp2",
+                      multi_az="true", region="eu-central-1")
+        yield series("host_instance_info", labels, times, [1] * len(times))
+    for name, value in (("host_disk_size_bytes", 300 * 2 ** 30),
+                        ("host_disk_max_size_bytes", 600 * 2 ** 30),
+                        ("host_disk_provisioned_iops", 3000),
+                        ("host_disk_provisioned_throughput_bytes_per_second", 125 * 2 ** 20)):
+        yield series(name, NODE, ts, [value] * len(ts))
+    balances = grid(AT_MS - 8 * DAY, AT_MS, 300_000)
+    for name, value in (("host_cpu_credit_balance", 96), ("host_cpu_surplus_credit_balance", 0),
+                        ("host_disk_burst_balance_percent", 90), ("host_ebs_io_balance_percent", 99),
+                        ("host_ebs_byte_balance_percent", 97.5)):
+        yield series(name, NODE, balances, [value] * len(balances))
+    ch = dict(NODE, node_name="clickhouse")
+    yield series("host_provider_info", dict(ch, provider="ClickHouse"), ts, [1] * len(ts))
+    for name, before, after in (("host_cpu_cores", 2, 4),
+                                ("host_os_memory_total_bytes", 8 * 2 ** 30, 16 * 2 ** 30),
+                                ("host_disk_size_bytes", 100 * 2 ** 30, 200 * 2 ** 30)):
+        yield series(name, ch, ts, [before if t < cut else after for t in ts])
+    for name, scale in (("temp_files", 1), ("temp_bytes", 2 ** 20)):
+        yield series(f"pgwatch_db_stats_{name}", dict(db_labels("target_database"), env="spill"),
+                     ts, [i * scale for i in range(len(ts))])
+    # A unique statement avoids overlapping the recorded counters with synthetic ones.
+    lab = dict(db_labels("target_database"), queryid="900000000001")
+    fields = ("calls", "rows", "shared_bytes_hit_total", "shared_bytes_read_total", "wal_bytes",
+              "temp_bytes_written", "exec_time_total", "temp_bytes_read")
+    for n, name in enumerate(fields, 1):
+        yield series(f"pgwatch_pg_stat_statements_{name}", lab, ts, [i * n * 8192 for i in range(len(ts))])
+
+
 def stats_reset():
     """pgwatch's tag is database_name; an older sink had datname: one of each."""
     ts = grid(AT_MS - 8 * DAY, AT_MS, 3_600_000)
@@ -153,7 +189,7 @@ def btree_bloat_bytes():
 
 def main():
     out = HERE / "synthetic.jsonl.gz"
-    rows = [*host(), *stats_reset(), *lock_waits(), *invalid_indexes(), *kcache(), *btree_bloat_bytes()]
+    rows = [*host(), *resource_sizing_and_spills(), *stats_reset(), *lock_waits(), *invalid_indexes(), *kcache(), *btree_bloat_bytes()]
     with gzip.GzipFile(out, "wb", compresslevel=9, mtime=0) as f:
         for r in rows:
             f.write((json.dumps(r, sort_keys=True, separators=(",", ":")) + "\n").encode())

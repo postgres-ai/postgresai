@@ -10,6 +10,7 @@ pub struct Target {
     pub instance_id: String,
     pub cluster: String,
     pub node_name: String,
+    pub region: String,
 }
 
 /// One sample to write: a host_* series of the target, its value and time (Unix ms).
@@ -18,13 +19,15 @@ pub struct Point {
     pub name: &'static str,
     /// `provider="Amazon RDS"` is added (host_provider_info only).
     pub provider: bool,
+    /// Extra labels of host_instance_info.
+    pub info: Vec<(String, String)>,
     pub value: f64,
     pub time: i64,
 }
 
-/// The samples not yet written, and the sources that failed this poll (Performance Insights,
-/// Enhanced Monitoring): their samples are retried on the next poll, the rest are kept. A
-/// malformed Enhanced Monitoring event is reported once and never retried: it stays malformed.
+/// The samples not yet written, and the sources that failed this poll (credit/burst balances,
+/// Performance Insights, Enhanced Monitoring): their samples are retried on the next poll; the
+/// rest are kept. A malformed Enhanced Monitoring event is reported once and never retried.
 #[derive(Debug, Default)]
 pub struct Poll {
     pub points: Vec<Point>,
@@ -160,18 +163,9 @@ fn label_text(t: &Target, provider: bool) -> String {
 /// The samples as rds-host-stats's import body (Prometheus text, value and time as JavaScript
 /// prints them).
 pub fn render(t: &Target, points: &[Point]) -> String {
-    let (l, lp) = (label_text(t, false), label_text(t, true));
     points
         .iter()
-        .map(|p| {
-            format!(
-                "{}{} {} {}\n",
-                p.name,
-                if p.provider { &lp } else { &l },
-                js_num(p.value),
-                p.time
-            )
-        })
+        .map(|p| format!("{}{} {} {}\n", p.name, point_label_text(t, p), js_num(p.value), p.time))
         .collect()
 }
 
@@ -184,14 +178,26 @@ pub fn labels(t: &Target, p: &Point) -> Vec<(String, String)> {
     if p.provider {
         l.push(("provider".into(), "Amazon RDS".into()));
     }
+    l.extend(p.info.clone());
     l
+}
+
+fn point_label_text(t: &Target, p: &Point) -> String {
+    let mut text = label_text(t, p.provider);
+    text.pop();
+    for (k, v) in &p.info {
+        let v = v.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+        text.push_str(&format!(",{k}=\"{v}\""));
+    }
+    text.push('}');
+    text
 }
 
 fn num(v: &Value) -> Option<f64> {
     v.as_f64()
 }
 
-/// One poll at `now` (Unix ms). Fails when DescribeDBInstances or GetMetricData fails or the
+/// One poll at `now` (Unix ms). Fails when DescribeDBInstances or the main GetMetricData fails or the
 /// instance is gone; `state` then may hold keys of samples not returned, so callers pass a copy
 /// and keep it only once the samples are written.
 pub async fn poll(api: &impl AwsApi, target: &Target, now: i64, state: &mut State) -> Result<Poll, AwsError> {
@@ -207,7 +213,7 @@ pub async fn poll(api: &impl AwsApi, target: &Target, now: i64, state: &mut Stat
         .cloned()
         .ok_or_else(|| err("Error", "RDS instance not found"))?;
     let aurora = db["Engine"].as_str() == Some("aurora-postgresql");
-    // CloudWatch and PI buckets are queried over the 15 minutes up to the last minute boundary,
+    // The main CloudWatch and PI requests cover the 15 minutes up to the last minute boundary,
     // so no bucket is cut by the wall clock. A bucket is written only once a further period has
     // passed after it closed: a partial Average written early would be frozen by the
     // per-timestamp dedupe, and the complete one dropped. CloudWatch stamps a bucket at its
@@ -256,6 +262,7 @@ pub async fn poll(api: &impl AwsApi, target: &Target, now: i64, state: &mut Stat
             out.points.push(Point {
                 name,
                 provider: false,
+                info: vec![],
                 value,
                 time,
             });
@@ -269,6 +276,7 @@ pub async fn poll(api: &impl AwsApi, target: &Target, now: i64, state: &mut Stat
         out.points.push(Point {
             name: PROVIDER,
             provider: true,
+            info: vec![],
             value: 1.0,
             time: end,
         });
@@ -306,6 +314,37 @@ pub async fn poll(api: &impl AwsApi, target: &Target, now: i64, state: &mut Stat
             }
         }
     }
+    let mut info = Vec::new();
+    for (label, field) in [
+        ("instance_class", "DBInstanceClass"),
+        ("engine", "Engine"),
+        ("storage_type", "StorageType"),
+    ] {
+        if let Some(v) = db[field].as_str().filter(|v| !v.is_empty()) {
+            info.push((label.into(), v.into()));
+        }
+    }
+    if let Some(v) = db.get("MultiAZ") {
+        let v = v.as_str().map_or_else(|| v.to_string(), String::from);
+        if !v.is_empty() {
+            info.push(("multi_az".into(), v));
+        }
+    }
+    if !target.region.is_empty() {
+        info.push(("region".into(), target.region.clone()));
+    }
+    let point = Point {
+        name: "host_instance_info",
+        provider: false,
+        info,
+        value: 1.0,
+        time: end,
+    };
+    let key = format!("{}{} {end}", point.name, point_label_text(target, &point));
+    if let std::collections::hash_map::Entry::Vacant(e) = state.entry(key) {
+        out.points.push(point);
+        e.insert(end);
+    }
     // Storage limits from the instance description, stamped at `end` on every poll. Only RDS
     // (not Aurora) reports them: Aurora storage grows on demand and has no provisioned IOPS or
     // throughput. gp2 and magnetic storage report no Iops or StorageThroughput, so their limit
@@ -327,6 +366,79 @@ pub async fn poll(api: &impl AwsApi, target: &Target, now: i64, state: &mut Stat
                 Some(t * 1024f64.powi(2)),
                 end,
             );
+        }
+        if let Some(a) = pos("MaxAllocatedStorage") {
+            emit(&mut out, state, "host_disk_max_size_bytes", Some(a * gib), end);
+        }
+    }
+    // Balances have five-minute buckets. Read overlapping, aligned windows so a failed read
+    // is retried without losing buckets, and never charge for inapplicable CPU/gp2 metrics.
+    const BALANCE_KEY: &str = "balances read at";
+    if !aurora && state.get(BALANCE_KEY).is_none_or(|last| end - last >= 300_000) {
+        let mut balances: Vec<Metric> = vec![];
+        if db["DBInstanceClass"]
+            .as_str()
+            .and_then(|s| s.strip_prefix("db.t"))
+            .and_then(|s| s.as_bytes().first())
+            .is_some_and(u8::is_ascii_digit)
+        {
+            balances.extend([
+                ("host_cpu_credit_balance", "CPUCreditBalance", 1.0),
+                ("host_cpu_surplus_credit_balance", "CPUSurplusCreditBalance", 1.0),
+            ]);
+        }
+        if db["StorageType"].as_str() == Some("gp2") {
+            balances.push(("host_disk_burst_balance_percent", "BurstBalance", 1.0));
+        }
+        balances.extend([
+            ("host_ebs_io_balance_percent", "EBSIOBalance%", 1.0),
+            ("host_ebs_byte_balance_percent", "EBSByteBalance%", 1.0),
+        ]);
+        let until = end.div_euclid(300_000) * 300_000;
+        let queries: Vec<Value> = balances
+            .iter()
+            .map(|m| query(m, "DBInstanceIdentifier", &json!(target.instance_id), 300))
+            .collect();
+        match api
+            .call(
+                "cloudwatch",
+                "GetMetricDataCommand",
+                json!({
+                    "StartTime": super::aws::iso_ms(until - 30 * 60_000),
+                    "EndTime": super::aws::iso_ms(until), "MetricDataQueries": queries,
+                }),
+            )
+            .await
+        {
+            Ok(result) => {
+                for (name, _, _) in balances {
+                    let data = result["MetricDataResults"]
+                        .as_array()
+                        .unwrap_or(&empty)
+                        .iter()
+                        .find(|r| r["Id"].as_str() == Some(name));
+                    let mut points: Vec<_> = data
+                        .and_then(|d| d["Timestamps"].as_array())
+                        .into_iter()
+                        .flatten()
+                        .enumerate()
+                        .filter_map(|(i, t)| {
+                            Some((
+                                t.as_str().and_then(parse_iso)?,
+                                data?.get("Values")?.get(i).and_then(num),
+                            ))
+                        })
+                        .collect();
+                    points.sort_by_key(|p| p.0);
+                    for (time, value) in points {
+                        if closed(time, 300) {
+                            emit(&mut out, state, name, value, time);
+                        }
+                    }
+                }
+                state.insert(BALANCE_KEY.into(), end);
+            }
+            Err(e) => out.errors.push(e),
         }
     }
     if db["PerformanceInsightsEnabled"].as_bool() == Some(true) {

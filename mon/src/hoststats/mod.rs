@@ -87,6 +87,7 @@ impl RdsTarget {
             instance_id: self.instance_id.clone(),
             cluster: self.cluster.clone(),
             node_name: self.node_name.clone(),
+            region: self.region.clone(),
         }
     }
 

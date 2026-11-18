@@ -66,7 +66,7 @@ scrape:
 
 ## Host rules
 
-`sql/host_rules.sql` holds the 37 recording rules that mapped Supabase (node_exporter through the
+`sql/host_rules.sql` holds the 38 recording rules that mapped Supabase (node_exporter through the
 instance-jobs relay) and ClickHouse Cloud (`PostgresServer_*`) series to the `host_*` vocabulary
 of `docs/host-metrics.md` (formerly vmalert's `old/config/prometheus/host_rules.yml`). pgai-mon
 evaluates it every `rules.interval_s` (60 s) at the minute, `rules.delay_s` (5 s) later, after a

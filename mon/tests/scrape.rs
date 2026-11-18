@@ -213,6 +213,8 @@ async fn clickhouse_cloud_with_basic_auth_from_the_password_file() {
     assert!(rows
         .iter()
         .any(|r| r.0 == "PostgresServer_MemoryLimitBytes" && r.1.contains(&base[base.find("instance").unwrap()..])));
+    // A014 needs the raw core count retained for the host_cpu_cores rule.
+    assert!(rows.iter().any(|r| r.0 == "PostgresServer_CPUCores" && r.2 == 1.0));
     // every PostgresServer_* line of the recording is kept (keep regex), nothing else
     let fx = fixture("clickhouse-prometheus.txt");
     let want_n = fx

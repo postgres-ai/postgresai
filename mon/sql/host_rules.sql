@@ -1,4 +1,4 @@
--- Host metrics vocabulary (docs/host-metrics.md): the 37 recording rules of the old
+-- Host metrics vocabulary (docs/host-metrics.md): the 38 recording rules of the old
 -- old/config/prometheus/host_rules.yml (groups host-supabase and host-clickhouse) as one query.
 -- pgai-mon evaluates it every 60 s at t = getvariable('t_ms') (an instant, aligned to the minute)
 -- and writes the rows back as host_* series {cluster, node_name[, provider]} (src/rules.rs),
@@ -180,6 +180,9 @@ ch_gauge AS (
   SELECT 'mem_limit' AS k, labels, value FROM prom_last('PostgresServer_MemoryLimitBytes',
     [['job','=~','clickhouse-.+'],['cluster','!=',''],['node_name','!=','']], getvariable('t_ms'), getvariable('t_ms'), 300000)
   UNION ALL
+  SELECT 'cpu_cores', labels, value FROM prom_last('PostgresServer_CPUCores',
+    [['job','=~','clickhouse-.+'],['cluster','!=',''],['node_name','!=','']], getvariable('t_ms'), getvariable('t_ms'), 300000)
+  UNION ALL
   SELECT 'mem_used_pct', labels, value FROM prom_last('PostgresServer_MemoryUsedPercent',
     [['job','=~','clickhouse-.+'],['cluster','!=',''],['node_name','!=','']], getvariable('t_ms'), getvariable('t_ms'), 300000)
   UNION ALL
@@ -195,6 +198,7 @@ ch_gauge AS (
 ch_g AS (   -- max by (cluster, node_name) of each gauge, one row per node
   SELECT labels['cluster'] AS cluster, labels['node_name'] AS node_name,
          max(value) FILTER (WHERE k = 'mem_limit') AS mem_limit,
+         max(value) FILTER (WHERE k = 'cpu_cores') AS cpu_cores,
          max(value) FILTER (WHERE k = 'mem_used_pct') AS mem_used_pct,
          max(value) FILTER (WHERE k = 'mem_cache_pct') AS mem_cache_pct,
          max(value) FILTER (WHERE k = 'storage_limit') AS storage_limit,
@@ -212,6 +216,8 @@ clickhouse AS (
   FROM ch_cpu c, (VALUES ('host_os_cpu_iowait_percent', 'iowait'), ('host_os_cpu_user_percent', 'user'),
                          ('host_os_cpu_system_percent', 'system'), ('host_os_cpu_steal_percent', 'steal')) m(metric, mode)
   GROUP BY m.metric, c.cluster, c.node_name
+  UNION ALL
+  SELECT 'host_cpu_cores', cluster, node_name, NULL, cpu_cores FROM ch_g
   UNION ALL
   SELECT 'host_os_memory_total_bytes', cluster, node_name, NULL, mem_limit FROM ch_g
   UNION ALL

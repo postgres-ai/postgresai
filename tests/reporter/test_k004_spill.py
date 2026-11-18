@@ -245,3 +245,22 @@ def test_k004_settings_from_monitoring_when_the_node_is_not_reachable(generator)
     # No backslash in the PromQL string literal: a dot matches as [.].
     assert "\\" not in generator.instant[-1] and "pg_stat_statements[.]track" in generator.instant[-1]
     assert "tag_setting_name=~" in generator.instant[-1]  # older pgwatch configs keep the tag_ prefix
+
+
+@pytest.mark.unit
+def test_k004_metrics_are_collected_by_monitoring_v4() -> None:
+    from pathlib import Path
+    import yaml
+    from reporter.postgres_reports import K004_WINDOW_METRICS
+
+    cfg = yaml.safe_load((Path(__file__).resolve().parents[2] / "mon/metrics.yml").read_text())
+    for sql in cfg["metrics"]["db_stats"]["sqls"].values():
+        assert "temp_files" in sql and "temp_bytes" in sql
+    for sql in cfg["metrics"]["pg_stat_statements"]["sqls"].values():
+        for name in K004_WINDOW_METRICS.values():
+            assert name.removeprefix("pgwatch_pg_stat_statements_") in sql
+    settings = cfg["metrics"]["settings"]["sqls"][11]
+    assert "from pg_settings" in settings and "name as tag_setting_name" in settings
+    assert "effective_setting as tag_setting_value" in settings and "unit as tag_unit" in settings
+    for name in ("db_stats", "pg_stat_statements", "settings"):
+        assert cfg["presets"]["full"]["metrics"][name] > 0

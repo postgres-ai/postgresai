@@ -1,7 +1,7 @@
 """The reporter on pgai-mon gives the same answers and the same reports as on VictoriaMetrics.
 
 Needs a pgai-mon binary ($PGAI_MON_BIN, or mon/target/*/pgai-mon); skipped without one (failed when CI is set). Builds a
-store from tests/reporter/mon_fixture/ (real pgwatch data, 8 days, 3,705 series, plus 70 synthetic
+store from tests/reporter/mon_fixture/ (real pgwatch data, 8 days, 3,705 series, plus 95 synthetic
 series for what the demo box lacks: host metrics, lock waits, invalid indexes, pg_stat_kcache,
 stats_reset, the older btree bloat gauges), serves it on 127.0.0.1 and compares, for the same
 samples:
@@ -28,7 +28,7 @@ from reporter.report_schemas import validate_query_file, validate_report
 
 pytestmark = pytest.mark.enable_socket
 
-DIRECT = ["D004_direct", "F001_direct", "G001_direct", "K001_30min"]
+DIRECT = ["D004_direct", "F001_direct", "G001_direct", "K001_30min", "A014_clickhouse", "A014_clickhouse_recent"]
 CHECKS = ["A002", "A003", "A004", "A005", "A007", "A014", "D001", "D004", "F001", "F002", "F004", "F005",
           "G001", "G003", "H001", "H002", "H004", "I001", "K001", "K003", "K004", "K005", "K006", "K007",
           "K008", "M001", "M002", "M003", "N001"]
@@ -131,6 +131,27 @@ def test_reports_have_content(reports):
     assert {i["index_name"] for i in invalid} == {"t10_c_idx", "pgbench_accounts_abalance_idx_ccnew"}
     assert all(i["listed_hours"] and i["reading_hours"] for i in invalid)
     assert data("A014")["host_metrics"] and data("A014")["memory"]["available_min_pct"] == 8.0
+    sizing = data("A014")
+    assert sizing["observed_size"]["size"] == "db.t4g.large"
+    assert sizing["observed_size"]["region"] == "eu-central-1"
+    assert sizing["observed_size"]["multi_az"] is True
+    assert sizing["observed_size"]["storage"]["max_size_gb"] == 600
+    assert sizing["observed_size"]["since_epoch"] is not None
+    for name in ("cpu_credit_balance", "cpu_surplus_balance", "burst_balance_pct",
+                 "ebs_io_balance_pct", "ebs_byte_balance_pct"):
+        assert any(v is not None for v in sizing["series"][name])
+    for check in ("A014_clickhouse", "A014_clickhouse_recent"):
+        validate_report(new[check])
+        ch = new[check]["results"]["clickhouse"]["data"]["observed_size"]
+        assert ch["vcpus"] == 4 and ch["memory_bytes"] == 16 * 2 ** 30
+        assert ch["size_source"] == "metrics"
+        assert (ch["since_epoch"] is not None) == (check == "A014_clickhouse")
+    spills = data("K004")["target_database"]
+    q = next(q for q in spills["top_queries"] if q["queryid"] == "900000000001")
+    assert q["calls"] > 0 and q["temp_bytes_read"] > 0 and q["exec_time_ms"] > 0
+    assert spills["summary"]["database_temp"]["bytes"]["total"] > 0
+    assert spills["summary"]["database_temp"]["files"]["total"] > 0
+    assert "work_mem" in new["K004"]["results"]["node-01"]["settings"]
     assert data("G001")["activity"]["host_memory"]["available_min_at"]
     assert data("D004")["pg_stat_kcache_status"]["extension_available"]
     assert data("F005")["postgres"]["bloated_indexes"]
@@ -178,3 +199,21 @@ def test_query_texts_continued_in_pages_are_the_same(mon):
             return rows, len(rows) == 7
 
     assert Paged(mon.url).query_texts() == whole
+
+
+@pytest.mark.parametrize("window,range_query,keeps_name", [
+    ("10799s", False, True), ("3h", False, False), ("3h", True, True),
+])
+def test_average_metric_name_matches_victoriametrics(mon, window, range_query, keeps_name):
+    # VM v1.140.0 with its default cache rewrites instant averages at 3 h to sum/count.
+    name = "host_cpu_utilization_percent"
+    query = f'avg_over_time({name}{{cluster="local",node_name="node-01"}}[{window}])'
+    client = MonClient(mon.url, clock=lambda: FIXTURE_AT)
+    if range_query:
+        rows = client.query_range(query, FIXTURE_AT - 600, FIXTURE_AT, "300s")
+    else:
+        result = client.query_instant(query)
+        assert result["status"] == "success"
+        rows = result["data"]["result"]
+    expected_name = name if keeps_name else None
+    assert rows and all(r["metric"].get("__name__") == expected_name for r in rows)

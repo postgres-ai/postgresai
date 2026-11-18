@@ -844,13 +844,21 @@ pub fn db_instances_from_xml(x: &Xml) -> Value {
                     m.insert(k.into(), json!(t));
                 }
             }
-            for k in ["AllocatedStorage", "Iops", "StorageThroughput", "MonitoringInterval"] {
+            for k in [
+                "AllocatedStorage",
+                "Iops",
+                "StorageThroughput",
+                "MonitoringInterval",
+                "MaxAllocatedStorage",
+            ] {
                 if let Some(n) = d.text_of(k).and_then(|t| t.trim().parse::<f64>().ok()) {
                     m.insert(k.into(), json!(n));
                 }
             }
-            if let Some(b) = d.text_of("PerformanceInsightsEnabled") {
-                m.insert("PerformanceInsightsEnabled".into(), json!(b.trim() == "true"));
+            for k in ["PerformanceInsightsEnabled", "MultiAZ"] {
+                if let Some(b) = d.text_of(k) {
+                    m.insert(k.into(), json!(b.trim() == "true"));
+                }
             }
             Value::Object(m)
         })
@@ -1009,12 +1017,12 @@ mod tests {
         assert!(parse_xml("<a><b></a>").is_err());
         assert!(parse_xml("<a>").is_err());
         let x = parse_xml("<R><DescribeDBInstancesResult><DBInstances><DBInstance><Engine>aurora-postgresql</Engine>\
-            <AllocatedStorage>1</AllocatedStorage><PerformanceInsightsEnabled>true</PerformanceInsightsEnabled><MonitoringInterval>15</MonitoringInterval>\
+            <DBInstanceClass>db.t4g.micro</DBInstanceClass><StorageType>gp3</StorageType><MultiAZ>false</MultiAZ><MaxAllocatedStorage>40</MaxAllocatedStorage><AllocatedStorage>1</AllocatedStorage><PerformanceInsightsEnabled>true</PerformanceInsightsEnabled><MonitoringInterval>15</MonitoringInterval>\
             <DbiResourceId>db-X</DbiResourceId><VpcSecurityGroups/></DBInstance></DBInstances></DescribeDBInstancesResult></R>").unwrap();
         assert_eq!(
             db_instances_from_xml(&x),
             json!({"DBInstances": [{"Engine": "aurora-postgresql", "AllocatedStorage": 1.0, "PerformanceInsightsEnabled": true,
-                                    "MonitoringInterval": 15.0, "DbiResourceId": "db-X"}]})
+                                    "MonitoringInterval": 15.0, "DbiResourceId": "db-X", "DBInstanceClass": "db.t4g.micro", "StorageType": "gp3", "MultiAZ": false, "MaxAllocatedStorage": 40.0}]})
         );
     }
 

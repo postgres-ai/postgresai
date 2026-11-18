@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { load } from "js-yaml";
 import { renderScrapeConfig } from "../lib/clickhouse";
 import { renderSupabaseScrapeConfig } from "../lib/host-metrics";
 
@@ -47,4 +48,14 @@ describe("the scrape files pgai-mon's tests read are the ones the CLI writes", (
     expect(read("cli/test/fixtures/clickhouse-prometheus.txt")).toBe(monFixture("clickhouse-prometheus.txt"));
     expect(read("instance-jobs/internal/supabase/testdata/supabase_metrics.prom")).toBe(monFixture("supabase_metrics.prom"));
   });
+});
+
+
+test("reporter and pgai-mon share the CLI's ClickHouse scrape files and key paths", () => {
+  const compose = load(read("docker-compose.yml")) as any;
+  for (const name of ["pgai-mon", "postgres-reports"]) {
+    expect(compose.services[name].volumes).toContain("./host-metrics:/etc/pgai/host-metrics:ro");
+  }
+  const jobs = load(monFixture("clickhouse-scrape.golden.yml")) as any[];
+  expect(jobs[0].basic_auth.password_file).toBe("/etc/pgai/host-metrics/clickhouse-my-postgres.secret");
 });

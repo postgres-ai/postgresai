@@ -276,8 +276,8 @@ fn series_notation() {
 }
 
 #[test]
-fn the_rules_sql_has_all_37_rules() {
-    // each provider block names its outputs; 22 Supabase + 15 ClickHouse = the 37 vmalert rules
+fn the_rules_sql_has_all_38_rules() {
+    // each provider block names its outputs; 22 Supabase + 16 ClickHouse = the 38 vmalert rules
     let sql = pgai_mon::rules::HOST_RULES_SQL;
     let block = |from: &str, to: &str| sql[sql.find(from).unwrap()..sql.find(to).unwrap()].to_string();
     let count = |b: &str| {
@@ -295,5 +295,5 @@ fn the_rules_sql_has_all_37_rules() {
     ch_names.sort();
     ch_names.dedup();
     assert_eq!(sb.len(), 22, "{sb:?}");
-    assert_eq!(ch_names.len(), 15, "{ch_names:?}");
+    assert_eq!(ch_names.len(), 16, "{ch_names:?}");
 }

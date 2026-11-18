@@ -51,13 +51,17 @@ A dash means the provider does not expose the value. RDS sources are CloudWatch 
 | `host_network_receive_bytes_per_second` | bytes/s | NetworkReceiveThroughput | rate of `network_receive_bytes_total`, without `lo`, per second of `time_seconds` | rate of `NetworkReceiveBytes_Total` |
 | `host_network_transmit_bytes_per_second` | bytes/s | NetworkTransmitThroughput | rate of `network_transmit_bytes_total`, without `lo`, per second of `time_seconds` | rate of `NetworkTransmitBytes_Total` |
 | `host_db_load` | average active sessions | PI `db.load.avg`, 60 s | – | – |
-| `host_instance_info` | identity | constant 1; labels `instance_class`, `engine`, `storage_type`, `multi_az`, `region` from DescribeDBInstances | – | – |
+| `host_instance_info` | identity | constant 1; labels `instance_class`, `engine`, `storage_type`, `multi_az` from DescribeDBInstances; `region` from the target configuration | – | – |
 | `host_cpu_cores` | vCPUs | – | – | CPUCores |
 | `host_cpu_credit_balance` | credits | CPUCreditBalance, 300 s (db.t*) | – | – |
 | `host_cpu_surplus_credit_balance` | credits | CPUSurplusCreditBalance, 300 s (db.t*) | – | – |
 | `host_disk_burst_balance_percent` | percent | BurstBalance, 300 s (gp2) | – | – |
 | `host_ebs_io_balance_percent` | percent | EBSIOBalance%, 300 s (RDS) | – | – |
 | `host_ebs_byte_balance_percent` | percent | EBSByteBalance%, 300 s (RDS) | – | – |
+
+RDS credit and burst balances are requested at most once every five minutes, over the preceding 30 minutes on five-minute boundaries. Failed reads are retried on the next poll. CPU credits are requested only for db.t classes, BurstBalance only for gp2, and EBS balances for non-Aurora RDS instances. A bucket is written only after another full period has passed since it closed.
+
+The reporter mounts the same `host-metrics/` directory read-only at `/etc/pgai/host-metrics`. A014 can read a ClickHouse service's size with the scrape key; if that lookup fails, it uses the CPU and memory metrics. The CLI creates the directory before starting the stack.
 
 ## Dashboard
 

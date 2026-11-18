@@ -62,6 +62,7 @@ fn target(c: &Case) -> Target {
         instance_id: c.instance_id.clone(),
         cluster: "ci".into(),
         node_name: "node-01".into(),
+        region: String::new(),
     }
 }
 
@@ -586,7 +587,7 @@ async fn a_tick_writes_the_samples_and_resends_them_after_a_failed_write() {
         .await
         .unwrap();
     assert_eq!(n, c.expected.lines().count());
-    assert_eq!(state.len(), n);
+    assert_eq!(state.len(), n + 1); // the successful balance read is remembered too
     assert_eq!(
         tick(&Replay::new(&c.recorded), &ing, &t, c.now, &mut state, &log)
             .await
@@ -597,30 +598,36 @@ async fn a_tick_writes_the_samples_and_resends_them_after_a_failed_write() {
     s.flush().await;
     // every expected line is a stored sample, value exact
     let rows = s.sql(
-        "SELECT r.metric, r.labels['cluster'], r.labels['node_name'], coalesce(r.labels['provider'], ''), epoch_ms(x.ts), CAST(x.value AS VARCHAR)
-         FROM samples x JOIN series r USING (series_id) ORDER BY 1, 5",
+        "SELECT r.metric, r.labels, epoch_ms(x.ts), CAST(x.value AS VARCHAR)
+         FROM samples x JOIN series r USING (series_id)",
     );
     let mut got: Vec<String> = rows
         .iter()
         .map(|r| {
-            let v: f64 = r[5].as_str().unwrap().parse().unwrap();
-            let p = r[3].as_str().unwrap();
-            let p = if p.is_empty() {
-                String::new()
-            } else {
-                format!(",provider=\"{p}\"")
-            };
             format!(
-                "{}{{cluster={},node_name={}{p}}} {} {}",
-                r[0].as_str().unwrap(),
+                "{} {} {} {}",
+                r[0],
                 r[1],
                 r[2],
-                rds::js_num(v),
-                r[4]
+                rds::js_num(r[3].as_str().unwrap().parse().unwrap())
             )
         })
         .collect();
-    let mut want: Vec<String> = c.expected.lines().map(String::from).collect();
+    let mut want: Vec<String> = c
+        .expected
+        .lines()
+        .map(|line| {
+            let p = pgai_mon::ingest::parse_line(line).unwrap();
+            let labels: std::collections::BTreeMap<_, _> = p.labels.into_iter().collect();
+            format!(
+                "{} {} {} {}",
+                json!(p.metric),
+                json!(labels),
+                p.ts.unwrap(),
+                rds::js_num(p.value)
+            )
+        })
+        .collect();
     got.sort();
     want.sort();
     assert_eq!(got, want);
@@ -738,6 +745,7 @@ fn db_target() -> Target {
         instance_id: "db".into(),
         cluster: "c".into(),
         node_name: "n".into(),
+        region: "us-east-1".into(),
     }
 }
 
@@ -750,13 +758,14 @@ async fn a_customer_role_is_assumed_with_its_external_id_and_its_credentials_sig
     assert_eq!(
         render(&db_target(), &p.points),
         "host_provider_info{cluster=\"c\",node_name=\"n\",provider=\"Amazon RDS\"} 1 1790856000000\n\
-         host_cpu_utilization_percent{cluster=\"c\",node_name=\"n\"} 12.5 1790855700000\n"
+         host_cpu_utilization_percent{cluster=\"c\",node_name=\"n\"} 12.5 1790855700000\n\
+         host_instance_info{cluster=\"c\",node_name=\"n\",engine=\"postgres\",region=\"us-east-1\"} 1 1790856000000\n"
     );
     let reqs = log.lock().unwrap().clone();
     // one AssumeRole: the assumed credentials are cached until shortly before they expire
     assert_eq!(
         reqs.iter().map(|r| r.action.as_str()).collect::<Vec<_>>(),
-        ["AssumeRole", "DescribeDBInstances", "GetMetricData"]
+        ["AssumeRole", "DescribeDBInstances", "GetMetricData", "GetMetricData"]
     );
     let sts = &reqs[0];
     assert!(
@@ -805,7 +814,7 @@ async fn without_keys_in_the_environment_the_instance_profile_comes_from_imdsv2(
     let p = poll(&c, &db_target(), parse_iso(NOW).unwrap(), &mut State::new())
         .await
         .unwrap();
-    assert_eq!(p.points.len(), 2);
+    assert_eq!(p.points.len(), 3);
     let reqs = log.lock().unwrap().clone();
     assert_eq!(
         reqs.iter()
@@ -836,7 +845,10 @@ fn run_polls_rds_from_the_environment_and_stores_the_host_series() {
         .local_addr()
         .unwrap()
         .port();
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_pgai-mon"));
+    // A shared target directory's top-level binary can be replaced by another worktree.
+    // Like the reporter harness, allow pinning this build's executable with PGAI_MON_BIN.
+    let binary = std::env::var_os("PGAI_MON_BIN").unwrap_or_else(|| env!("CARGO_BIN_EXE_pgai-mon").into());
+    let mut cmd = std::process::Command::new(binary);
     let cfg = d.path().join("pgai-mon.yml");
     std::fs::write(
         &cfg,
@@ -901,7 +913,7 @@ fn run_polls_rds_from_the_environment_and_stores_the_host_series() {
     for _ in 0..300 {
         if let Some(r) = sql(q) {
             rows = r["rows"].as_array().cloned().unwrap_or_default();
-            if rows.len() >= 2 {
+            if rows.len() >= 3 {
                 break;
             }
         }
@@ -911,6 +923,11 @@ fn run_polls_rds_from_the_environment_and_stores_the_host_series() {
         rows,
         vec![
             json!(["host_cpu_utilization_percent", "cluster=c,node_name=n", 12.5]),
+            json!([
+                "host_instance_info",
+                "cluster=c,engine=postgres,node_name=n,region=us-east-1",
+                1.0
+            ]),
             json!(["host_provider_info", "cluster=c,node_name=n,provider=Amazon RDS", 1.0]),
         ],
         "AWS calls: {:?}",
@@ -922,4 +939,153 @@ fn run_polls_rds_from_the_environment_and_stores_the_host_series() {
         reqs[0].authorization.contains("Credential=ambient/")
             && reqs[0].authorization.contains("/us-east-1/rds/aws4_request")
     );
+}
+
+#[tokio::test]
+async fn instance_identity_escapes_labels_and_storage_autoscaling_is_optional() {
+    let c = load("rds-postgres");
+    let mut rec = c.recorded.clone();
+    let db = &mut find(&mut rec, "DescribeDBInstancesCommand")["DBInstances"][0];
+    db["StorageType"] = json!("gp3\"\\\n");
+    db["MultiAZ"] = json!(true);
+    db["MaxAllocatedStorage"] = json!(40);
+    let mut t = target(&c);
+    t.region = "eu-central-1".into();
+    let p = poll(&Replay::new(&rec), &t, c.now, &mut State::new()).await.unwrap();
+    let info = p.points.iter().find(|p| p.name == "host_instance_info").unwrap();
+    assert_eq!(
+        rds::labels(&t, info),
+        vec![
+            ("cluster".into(), "ci".into()),
+            ("node_name".into(), "node-01".into()),
+            ("instance_class".into(), "db.t4g.micro".into()),
+            ("engine".into(), "postgres".into()),
+            ("storage_type".into(), "gp3\"\\\n".into()),
+            ("multi_az".into(), "true".into()),
+            ("region".into(), "eu-central-1".into()),
+        ]
+    );
+    let text = render(&t, &p.points);
+    assert!(text.contains("storage_type=\"gp3\\\"\\\\\\n\""));
+    assert!(text.contains(&format!(
+        "host_disk_max_size_bytes{{cluster=\"ci\",node_name=\"node-01\"}} {} {}",
+        40u64 << 30,
+        c.now
+    )));
+    for value in [Value::Null, json!(0)] {
+        find(&mut rec, "DescribeDBInstancesCommand")["DBInstances"][0]["MaxAllocatedStorage"] = value;
+        let (text, _) = run(&Replay::new(&rec), &c, c.now, &mut State::new()).await;
+        assert!(!text.contains("host_disk_max_size_bytes"));
+    }
+}
+
+#[tokio::test]
+async fn balances_are_throttled_filtered_and_retried_without_losing_other_samples() {
+    struct Balances {
+        db: Value,
+        calls: Mutex<Vec<Value>>,
+        fail: bool,
+    }
+    impl AwsApi for Balances {
+        async fn call(&self, client: &'static str, _: &'static str, input: Value) -> Result<Value, AwsError> {
+            if client == "rds" {
+                return Ok(json!({"DBInstances": [self.db]}));
+            }
+            assert_eq!(client, "cloudwatch");
+            let balance = input["MetricDataQueries"][0]["MetricStat"]["Period"] == 300;
+            self.calls.lock().unwrap().push(input);
+            if balance && self.fail {
+                return Err(err("Throttling", "retry"));
+            }
+            Ok(json!({"MetricDataResults": []}))
+        }
+    }
+    let c = load("rds-postgres");
+    let mut db = c.recorded[0].output["DBInstances"][0].clone();
+    db["PerformanceInsightsEnabled"] = json!(false);
+    db["MonitoringInterval"] = json!(0);
+    let mut api = Balances {
+        db,
+        calls: Mutex::new(vec![]),
+        fail: false,
+    };
+    let mut state = State::new();
+    for minute in [0, 4] {
+        poll(&api, &target(&c), c.now + minute * 60_000, &mut state)
+            .await
+            .unwrap();
+    }
+    let balances = |api: &Balances| {
+        api.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|q| q["MetricDataQueries"][0]["MetricStat"]["Period"] == 300)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let calls = balances(&api);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0]["MetricDataQueries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|q| q["Id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "host_cpu_credit_balance",
+            "host_cpu_surplus_credit_balance",
+            "host_ebs_io_balance_percent",
+            "host_ebs_byte_balance_percent"
+        ]
+    );
+    let start = parse_iso(calls[0]["StartTime"].as_str().unwrap()).unwrap();
+    let end = parse_iso(calls[0]["EndTime"].as_str().unwrap()).unwrap();
+    assert_eq!((start % 300_000, end % 300_000, end - start), (0, 0, 30 * 60_000));
+    api.db["DBInstanceClass"] = json!("db.m7g.large");
+    api.db["StorageType"] = json!("gp2");
+    poll(&api, &target(&c), c.now + 5 * 60_000, &mut state).await.unwrap();
+    assert_eq!(
+        balances(&api)[1]["MetricDataQueries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|q| q["Id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "host_disk_burst_balance_percent",
+            "host_ebs_io_balance_percent",
+            "host_ebs_byte_balance_percent"
+        ]
+    );
+    api.fail = true;
+    let failed = poll(&api, &target(&c), c.now + 10 * 60_000, &mut state).await.unwrap();
+    assert_eq!(failed.errors, vec![err("Throttling", "retry")]);
+    assert!(failed.points.iter().any(|p| p.name == "host_instance_info"));
+    assert!(failed.points.iter().any(|p| p.name == "host_disk_size_bytes"));
+    api.fail = false;
+    poll(&api, &target(&c), c.now + 11 * 60_000, &mut state).await.unwrap();
+    assert_eq!(balances(&api).len(), 4); // includes the failed attempt
+    api.db["Engine"] = json!("aurora-postgresql");
+    poll(&api, &target(&c), c.now, &mut State::new()).await.unwrap();
+    assert_eq!(balances(&api).len(), 4);
+}
+
+#[test]
+fn every_requested_cloudwatch_metric_has_a_dashboard_or_report_reader() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut readers = std::fs::read_to_string(root.join("../reporter/postgres_reports.py")).unwrap();
+    for path in std::fs::read_dir(root.join("grafana/dashboards")).unwrap() {
+        readers.push_str(&std::fs::read_to_string(path.unwrap().path()).unwrap());
+    }
+    for name in CASES {
+        for call in load(name).recorded.iter().filter(|r| r.client == "cloudwatch") {
+            for q in call.input["MetricDataQueries"].as_array().unwrap() {
+                let metric = q["Id"].as_str().unwrap();
+                assert!(readers.contains(metric), "{metric} has no reader");
+            }
+        }
+    }
+    assert!(readers.contains("host_disk_burst_balance_percent"));
 }

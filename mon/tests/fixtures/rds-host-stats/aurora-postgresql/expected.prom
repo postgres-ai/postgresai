@@ -83,6 +83,7 @@ host_network_transmit_bytes_per_second{cluster="ci",node_name="node-01"} 0.7 179
 host_network_transmit_bytes_per_second{cluster="ci",node_name="node-01"} 1.8673673673673674 1790576040000
 host_network_transmit_bytes_per_second{cluster="ci",node_name="node-01"} 0.7007007007007007 1790576100000
 host_network_transmit_bytes_per_second{cluster="ci",node_name="node-01"} 0.7 1790576160000
+host_instance_info{cluster="ci",node_name="node-01",instance_class="db.serverless",engine="aurora-postgresql",storage_type="aurora",multi_az="false"} 1 1790576280000
 host_db_load{cluster="ci",node_name="node-01"} 0 1790575440000
 host_db_load{cluster="ci",node_name="node-01"} 0 1790575500000
 host_db_load{cluster="ci",node_name="node-01"} 0 1790575560000

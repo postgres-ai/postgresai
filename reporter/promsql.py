@@ -370,7 +370,7 @@ class Grid:
 
 
 # Rollups whose result keeps the metric name on VictoriaMetrics (measured on v1.140.0).
-_KEEP_NAME = {"last_over_time", "max_over_time", "min_over_time", "quantile_over_time"}
+_KEEP_NAME = {"last_over_time", "max_over_time", "min_over_time", "avg_over_time", "quantile_over_time"}
 # Rollups pgai-mon evaluates natively (eval.sql); the rest are SQL here.
 _NATIVE = {"last_over_time", "max_over_time", "min_over_time", "avg_over_time", "sum_over_time",
            "count_over_time", "tlast_over_time", "increase", "rate"}
@@ -448,6 +448,10 @@ class _Compiler:
         elif fn in _NATIVE:
             src = f"SELECT series_id AS k, t + {off} AS t, value FROM prom_{fn}({args}, {w})"
             keep = fn in _KEEP_NAME
+            # VM's default instant-rollup optimization rewrites averages of at least 3 h
+            # as sum/count. That division drops the name; shorter and range averages keep it.
+            if fn == "avg_over_time" and gg.start == gg.end and w >= 3 * 3_600_000:
+                keep = False
         elif fn == "tmax_over_time":
             # VictoriaMetrics returns the last timestamp of the maximum (seconds)
             src = (f"SELECT series_id AS k, t + {off} AS t, arg_max(ts, (v, ts)) / 1e3 AS value\n"
