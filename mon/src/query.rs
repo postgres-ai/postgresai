@@ -1872,3 +1872,6 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(get_health))
         .with_state(state)
 }
+
+#[cfg(test)]
+mod concurrency_tests;

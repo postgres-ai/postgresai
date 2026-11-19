@@ -161,19 +161,31 @@ client ─► POST /sql ─► auth ─► result cache ─► admission ─► 
    invalidates the entry. A hit retains the original body's `elapsed_ms`.
 3. **Admission** (`admission.rs`). `http.max_concurrent` queries run at once (default: one per
    core, at most 4). Rust `available_parallelism()` honors Linux cgroup v2 quotas and affinity.
-   Compose gives pgai-mon 2.0 CPUs, normally two slots; tighter ancestor limits still apply.
+   Compose gives pgai-mon a 2.0 CPU ceiling, normally two slots; tighter ancestor limits still apply.
+   A ceiling does not reserve cores: on a two-vCPU host, Grafana and pgai-mon share those CPUs.
    With one or two slots, heavy queries may use every slot. Waiters are ordered by arrival
    time plus expected service time. Fresh short queries go before fresh heavy waiters;
    once a heavy waiter's priority deadline passes, new shorts cannot bypass it.
    Queries do not preempt running queries. With three or more slots, one remains reserved
    for short queries; the same ageing order applies to eligible waiters.
    The heavy-query RSS gate, big-shape isolation and exclusive retry rules still apply.
+   With the default 192 MiB reader cap and 50% gate, another heavy query waits at or above
+   96 MiB reader RSS. `slots` and `heavy_slots` describe capacity, not actual concurrency;
+   `/health` reports `running_heavy` and `mem_deferred` under `admission`.
    Up to `http.queue_max` (64) wait for at most `http.queue_wait_ms` (30 s); beyond that the
    answer is `busy`, HTTP 429.
 4. **Read-only check** (`Reader::check_read_only` in `query.rs`). DuckDB's own parser
    serialises the statement; anything but exactly one SELECT is refused, and so is a table
    function outside the allowlist.
-5. **Execution.** The reader defines one internal view per kind over the file list in the
+5. **Execution.** The child starts a thread per request. Each query checks out its own
+   connection to the same DuckDB instance; the connection-pool lock is released before
+   execution. With `threads=1`, each caller executes its own query, so two admitted queries
+   can use two cores. `eval_workers=1` disables extra workers within a query, not concurrent
+   queries. The connections share the DuckDB memory limit, reader RSS cap and caches.
+   Identical row-cache computations may share one flight. Catalog publication waits for
+   running queries, which hold a shared snapshot lock.
+
+   The reader defines one internal view per kind over the file list in the
    catalog (no directory listing) and re-points them when the catalog generation changes. The
    public views are in `schema/views.sql`. The `prom_*` macros call Rust table functions that
    read the Parquet files directly, one series at a time, and use rollups for closed days.
