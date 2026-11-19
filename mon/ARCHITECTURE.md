@@ -139,18 +139,27 @@ client ─► POST /sql ─► auth ─► result cache ─► admission ─► 
 2. **Result cache** (`qcache.rs`). Key: expanded SQL text, response format, views hash and dictionary
    version. Evaluator-only queries record the union of their bound fetch windows, including
    lookback, and metric hash prefixes (the high 16 bits of series IDs). Sample and series
-   flush files record their prefixes in the catalog. Sample additions on rollup-covered days
-   intersecting the fetch window invalidate first: even unrelated or newer samples can disable
-   that day's rollups and change the answer. Otherwise, a disjoint prefix set proves an added
-   file unrelated, even when its samples overlap the window. Hash collisions and missing
-   metadata remain conservative. Otherwise, added samples must start after the fetch end;
-   series additions must also fall outside the selected days or months. Evaluator file
-   removal or replacement still invalidates, as do registry and rollup changes. The parent
-   compares file snapshots once per catalog generation; entries store no file lists and
-   their dependency metadata counts toward the cache byte limit.
-   Ordinary SQL, mixed evaluator/table queries and unproven macros keep generation-only
-   validity. Macro bodies and every overload must pass the dependency check. Errors and
-   volatile queries are not stored. Identical requests in flight share one execution.
+   flush files record their prefixes in the catalog. A sample addition invalidates when it
+   can disable a rollup on a day intersecting the fetch window: that day must previously
+   have had exactly one level-2 sample file and a rollup. Retained rollups on an already raw
+   day do not invalidate newer-only flushes. Otherwise, disjoint metric prefixes prove an
+   added file unrelated. Hash collisions and missing metadata remain conservative. Related
+   added samples must start after the full fetch end; same-day series additions still
+   invalidate because label-only evaluator calls can expose them without matching samples.
+   Evaluator file removal or replacement, registry changes and rollup changes invalidate.
+   The parent compares file snapshots once per catalog generation; entries store no file
+   lists and their dependency metadata counts toward the cache byte limit.
+   Evaluator queries may join the built-in `query_texts` view, as D02 does. The reader verifies
+   its definition and raw catalog view before permitting this exception. Ambiguous names
+   and macros overriding the views' functions keep the conservative path. Query-text additions,
+   replacements and removals invalidate bounded entries regardless of timestamp. This is
+   conservative even for evaluator queries that do not read text. Other mixed table queries,
+   custom views and unproven macros keep generation-only validity. Macro bodies and every
+   overload must pass the dependency check. Errors and volatile queries are not stored.
+   Identical requests in flight share one execution. `/health` exposes cumulative entry counts
+   in `cache.l1.invalidations`: snapshot, unbounded, dictionary, data_epoch, rollup_eligibility,
+   added_samples, added_series, added_query_texts, added_other and removed_files. Each discarded
+   entry counts once under the first matching rule; in-flight work and LRU evictions are separate.
    The response header `x-pgai-cache` says how a request was served. `grafana.rs` consumes the
    compiler's leading `-- pgai-window-v1 from to interval range|instant` line and expands reserved
    `$__pgai_*` numeric parameters before both keying and execution. Quotes and comments are left
@@ -195,7 +204,8 @@ client ─► POST /sql ─► auth ─► result cache ─► admission ─► 
    bounds prove that every timestamp matches. This works on existing local Rust-compacted files;
    neither the storage format nor the row-group size changes. DuckDB does not push these
    filters. Remote scans keep full decoding to preserve bounded streaming prefetch.
-   DuckDB-written delta-encoded files keep full decoding: the pinned Parquet reader
+   New flush files are DuckDB-written; hourly and daily sample merges use Rust. DuckDB-written
+   delta-encoded files keep full decoding: the pinned Parquet reader
    cannot skip their 256-value miniblocks. They gain pushdown after normal Rust compaction.
    `PGAI_QUERY_TIMING` reports materialized rows separately from series/time predicate rows.
    Predicate time is also part of scan-open time, since the synchronous reader filters in
@@ -365,7 +375,7 @@ there is no retry polling. Outage recovery still uses the separate `lost` state.
 - Result-cache reuse across flushes needs identical expanded SQL and proven evaluator dependencies.
   Moving Grafana bounds share entries only when all used window parameters stay equal. Changes to rollups or the registry, and removal
   of any evaluator file, invalidate conservatively even when an individual query could be
-  unaffected. Raw SQL and unproven macros remain generation-bound.
+  unaffected. Mixed raw-table SQL outside the verified query-text join and unproven macros remain generation-bound.
 - Publishing a new query snapshot waits for running queries. Remote file downloads happen
   before that wait, so other queries can still use the previous snapshot while copying.
 

@@ -182,6 +182,22 @@ pub struct L1Stats {
     pub not_stored_size: AtomicU64,
     pub not_stored_volatile: AtomicU64,
     pub stale_gen_bypass: AtomicU64,
+    pub invalidations: InvalidationStats,
+}
+
+/// Entries discarded at a catalog transition, counted once by the first matching reason.
+#[derive(Default)]
+pub struct InvalidationStats {
+    pub snapshot: AtomicU64,
+    pub unbounded: AtomicU64,
+    pub dictionary: AtomicU64,
+    pub data_epoch: AtomicU64,
+    pub rollup_eligibility: AtomicU64,
+    pub added_samples: AtomicU64,
+    pub added_series: AtomicU64,
+    pub added_other: AtomicU64,
+    pub added_query_texts: AtomicU64,
+    pub removed_files: AtomicU64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,6 +328,18 @@ impl QueryCache {
             "not_stored_size": l(&s.not_stored_size),
             "not_stored_volatile": l(&s.not_stored_volatile),
             "stale_generation_bypass": l(&s.stale_gen_bypass),
+            "invalidations": {
+                "snapshot": l(&s.invalidations.snapshot),
+                "unbounded": l(&s.invalidations.unbounded),
+                "dictionary": l(&s.invalidations.dictionary),
+                "data_epoch": l(&s.invalidations.data_epoch),
+                "rollup_eligibility": l(&s.invalidations.rollup_eligibility),
+                "added_samples": l(&s.invalidations.added_samples),
+                "added_series": l(&s.invalidations.added_series),
+                "added_other": l(&s.invalidations.added_other),
+                "added_query_texts": l(&s.invalidations.added_query_texts),
+                "removed_files": l(&s.invalidations.removed_files),
+            },
         })
     }
 
@@ -350,18 +378,12 @@ impl QueryCache {
                     if let Some((added, removed)) = changes {
                         let old = st.snapshot.as_ref().unwrap();
                         let old_epoch = old.data_epoch;
-                        // All rollup tiers depend on the whole day's sample-file count.
-                        let rollup_days: std::collections::HashSet<_> = old
-                            .files
-                            .iter()
-                            .chain(snapshot.files.iter())
-                            .flat_map(|files| files.iter())
-                            .filter(|f| f.kind == crate::eval::rollup::KIND)
-                            .map(|f| f.day)
-                            .collect();
+                        // Adding samples can only disable a rollup that was usable before.
+                        // Retained rollup files on an already raw day do not make it eligible.
+                        let rollup_days = crate::eval::rollup::valid_days(old.files.as_ref().unwrap(), 0);
                         let changed_rollup_days: Vec<_> = added
                             .iter()
-                            .filter(|f| f.kind == "samples" && rollup_days.contains(&f.day))
+                            .filter(|f| f.kind == "samples" && rollup_days.contains_key(&f.day))
                             .map(|f| f.day)
                             .collect();
                         // An unexplained data epoch change cannot be proved harmless.
@@ -371,29 +393,43 @@ impl QueryCache {
                             .iter()
                             .filter_map(|(k, slot)| {
                                 let Slot::Ready(e, _) = slot else { return None };
-                                let r = e.range.as_ref()?;
-                                (known
-                                    && k.dict == snapshot.dict_version
-                                    && !changed_rollup_days.iter().any(|day| {
+                                let reasons = &self.stats.invalidations;
+                                let reason = if let Some(r) = &e.range {
+                                    if !known {
+                                        Some(&reasons.data_epoch)
+                                    } else if k.dict != snapshot.dict_version {
+                                        Some(&reasons.dictionary)
+                                    } else if changed_rollup_days.iter().any(|day| {
                                         *day >= crate::model::day_of(r.start) && *day <= crate::model::day_of(r.end)
-                                    })
-                                    && added.iter().all(|f| {
-                                        unrelated(f, r)
+                                    }) {
+                                        Some(&reasons.rollup_eligibility)
+                                    } else if let Some(f) = added.iter().find(|f| {
+                                        !(unrelated(f, r)
                                             || (!matches!(
                                                 f.kind.as_str(),
-                                                crate::eval::rollup::KIND
+                                                "query_texts"
+                                                    | crate::eval::rollup::KIND
                                                     | crate::eval::rollup::KIND_1D
                                                     | crate::eval::rollup::KIND_1HM
                                             ) && f.min_ts > r.end
                                                 && (!matches!(
                                                     f.kind.as_str(),
                                                     "series" | crate::store::SERIES_MONTH | crate::registry::KIND
-                                                ) || !reads(f, r)))
-                                    })
-                                    && removed.iter().all(|f| {
-                                        !matches!(
+                                                ) || !reads(f, r))))
+                                    }) {
+                                        Some(match f.kind.as_str() {
+                                            "samples" => &reasons.added_samples,
+                                            "query_texts" => &reasons.added_query_texts,
+                                            "series" | crate::store::SERIES_MONTH | crate::registry::KIND => {
+                                                &reasons.added_series
+                                            }
+                                            _ => &reasons.added_other,
+                                        })
+                                    } else if removed.iter().any(|f| {
+                                        matches!(
                                             f.kind.as_str(),
                                             "samples"
+                                                | "query_texts"
                                                 | "series"
                                                 | crate::store::SERIES_MONTH
                                                 | crate::registry::KIND
@@ -401,8 +437,20 @@ impl QueryCache {
                                                 | crate::eval::rollup::KIND_1D
                                                 | crate::eval::rollup::KIND_1HM
                                         )
-                                    }))
-                                .then_some(*k)
+                                    }) {
+                                        Some(&reasons.removed_files)
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    Some(&reasons.unbounded)
+                                };
+                                if let Some(reason) = reason {
+                                    reason.fetch_add(1, Ordering::Relaxed);
+                                    None
+                                } else {
+                                    Some(*k)
+                                }
                             })
                             .collect();
                         let mut kept = HashMap::new();
@@ -418,6 +466,10 @@ impl QueryCache {
                             st.map.insert(k, slot);
                         }
                     } else {
+                        self.stats
+                            .invalidations
+                            .snapshot
+                            .fetch_add(st.lru.len() as u64, Ordering::Relaxed);
                         st.clear();
                     }
                     st.gen = gen_now;

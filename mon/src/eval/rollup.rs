@@ -1197,7 +1197,7 @@ fn months_1h(ctx: &EvalCtx, p: i64, q: i64, days: Vec<FileEntry>) -> Vec<(i64, i
 
 /// Days whose samples are exactly one closed (level 2) file and that have a 1 h rollup of at
 /// least `ver`: day -> the rollup.
-fn valid_days(files: &[FileEntry], ver: u8) -> HashMap<i64, &FileEntry> {
+pub(crate) fn valid_days(files: &[FileEntry], ver: u8) -> HashMap<i64, &FileEntry> {
     let mut samples_per_day: HashMap<i64, (usize, bool)> = HashMap::new();
     for fe in files.iter().filter(|f| f.kind == "samples") {
         let e = samples_per_day.entry(fe.day).or_insert((0, true));

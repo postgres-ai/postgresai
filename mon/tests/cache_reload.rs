@@ -299,6 +299,18 @@ async fn http_cache_checks_dictionary_before_serving_and_keeps_historical_flush_
         assert_eq!(body, b.call("sql_csv", sql.clone()).await.unwrap().body);
         assert_eq!(body.contains("42.0"), step >= 2);
     }
+    let health: serde_json::Value = serde_json::from_str(
+        &client
+            .get(url.replace("/sql?format=csv", "/health"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(health["cache"]["l1"]["invalidations"]["rollup_eligibility"], 0);
     server.abort();
 }
 
@@ -630,4 +642,161 @@ async fn dependencies_include_every_metric_even_when_no_series_match() {
     let new = check(&c, &b, &core, &sql, Served::Miss).await;
     assert_ne!(old, new);
     assert!(new.contains("123.0"));
+}
+
+/// A loaded or reopened day can retain rollup files after it has switched back to raw.
+#[tokio::test]
+async fn newer_flushes_on_an_already_raw_rollup_day_keep_past_results() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = StoreCore::open(dir.path(), &StoreCfg::default()).unwrap();
+    seed(&mut core);
+    core.compactor().unwrap().run_once(END + DAY_MS, true).unwrap();
+    append(&mut core, END + 1_800_000, 100.0);
+    let b = Backend::InProc(Arc::new(
+        Reader::new(
+            core.shared.clone(),
+            HttpCfg::default(),
+            EMBEDDED_VIEWS_SQL.into(),
+            dict(3600).entries,
+        )
+        .unwrap(),
+    ));
+    let c = cache();
+    let sql = query(END);
+    check(&c, &b, &core, &sql, Served::Miss).await;
+    for minute in 1..=3 {
+        append(&mut core, END + 1_800_000 + minute * 60_000, 101.0);
+        let f = core
+            .shared
+            .catalog
+            .lock()
+            .unwrap()
+            .files_of("samples")
+            .last()
+            .unwrap()
+            .clone();
+        assert_eq!(f.min_ts, END + 1_800_000 + minute * 60_000);
+        assert_eq!(f.min_ts, f.max_ts);
+        let (r, how) = cached(&c, &b, &core, &sql, false).await;
+        assert_eq!(how, Served::Hit, "{}", c.stats_json());
+        assert_eq!(r.body, b.call("sql_csv", sql.clone()).await.unwrap().body);
+    }
+    assert_eq!(c.stats_json()["invalidations"]["rollup_eligibility"], 0);
+    append(&mut core, END, 99.0);
+    assert!(check(&c, &b, &core, &sql, Served::Miss).await.contains("99.0"));
+    assert_eq!(c.stats_json()["invalidations"]["added_samples"], 1);
+}
+
+#[tokio::test]
+async fn dashboard_text_join_survives_samples_but_not_text_changes() {
+    use pgai_mon::model::QueryText;
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = StoreCore::open(dir.path(), &StoreCfg::default()).unwrap();
+    seed(&mut core);
+    let b = Backend::InProc(Arc::new(
+        Reader::new(
+            core.shared.clone(),
+            HttpCfg::default(),
+            format!("{EMBEDDED_VIEWS_SQL}\nCREATE MACRO text_count() AS (SELECT count(*) FROM query_texts);"),
+            dict(3600).entries,
+        )
+        .unwrap(),
+    ));
+    let c = cache();
+    let queries = [
+        format!(
+            "SELECT value, (SELECT count(*) FROM query_texts) n FROM ({})",
+            query(END)
+        ),
+        format!("SELECT value, text_count() n FROM ({})", query(END)),
+    ];
+    for q in &queries {
+        check(&c, &b, &core, q, Served::Miss).await;
+    }
+    for minute in 1..=3 {
+        append(&mut core, END + 1_800_000 + minute * 60_000, 100.0);
+        for q in &queries {
+            check(&c, &b, &core, q, Served::Hit).await;
+        }
+    }
+    core.append(Record::QueryTexts(vec![QueryText {
+        queryid: 42,
+        dbname: "db".into(),
+        query_hash: 42,
+        query: Some("SELECT 42".into()),
+        first_seen: END + 3_600_000,
+        last_seen: END + 3_600_000,
+        src: Default::default(),
+    }]))
+    .unwrap();
+    core.flush().unwrap();
+    for q in &queries {
+        assert!(check(&c, &b, &core, q, Served::Miss).await.contains("42.0,1"));
+    }
+    assert_eq!(c.stats_json()["invalidations"]["added_query_texts"], 2);
+    {
+        let mut cat = core.shared.catalog.lock().unwrap();
+        cat.files.retain(|f| f.kind != "query_texts");
+        cat.generation += 1;
+        cat.save(dir.path()).unwrap();
+        core.shared
+            .generation
+            .store(cat.generation, std::sync::atomic::Ordering::Release);
+    }
+    for q in &queries {
+        assert!(check(&c, &b, &core, q, Served::Miss).await.contains("42.0,0"));
+    }
+    assert_eq!(c.stats_json()["invalidations"]["removed_files"], 2);
+}
+
+#[tokio::test]
+async fn overridden_text_views_keep_generation_only_validity() {
+    for custom in [
+        "CREATE OR REPLACE VIEW query_texts AS SELECT count(*) n FROM samples;",
+        "CREATE TEMP VIEW query_texts AS SELECT count(*) n FROM samples;",
+        "CREATE TEMP TABLE Query_Texts AS SELECT count(*) n FROM samples;",
+        "CREATE OR REPLACE VIEW _raw_query_texts AS SELECT 1 n; CREATE OR REPLACE VIEW query_texts AS SELECT * FROM _raw_query_texts;",
+        "CREATE OR REPLACE VIEW _raw_query_texts AS SELECT 1::BIGINT queryid, 'db' dbname, 'sql' query, min(ts) first_seen, max(ts) last_seen, 1::UBIGINT query_hash, '' AS source, '' AS cluster, '' AS node_name FROM samples;",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = StoreCore::open(dir.path(), &StoreCfg::default()).unwrap();
+        seed(&mut core);
+        let b = Backend::InProc(Arc::new(Reader::new(core.shared.clone(), HttpCfg::default(), format!("{EMBEDDED_VIEWS_SQL}\n{custom}"), dict(3600).entries).unwrap()));
+        let c = cache();
+        let sql = format!("SELECT value, (SELECT count(*) FROM query_texts) n FROM ({})", query(END));
+        check(&c, &b, &core, &sql, Served::Miss).await;
+        append(&mut core, END + 1, 100.0);
+        check(&c, &b, &core, &sql, Served::Miss).await;
+        assert_eq!(c.stats_json()["invalidations"]["unbounded"], 1);
+    }
+}
+
+#[tokio::test]
+async fn text_view_function_shadowing_is_not_bounded() {
+    use pgai_mon::model::QueryText;
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = StoreCore::open(dir.path(), &StoreCfg::default()).unwrap();
+    seed(&mut core);
+    core.append(Record::QueryTexts(vec![QueryText {
+        queryid: 42,
+        dbname: "db".into(),
+        query_hash: 42,
+        query: Some("SELECT 42".into()),
+        first_seen: END,
+        last_seen: END,
+        src: Default::default(),
+    }]))
+    .unwrap();
+    core.flush().unwrap();
+    let views = format!("CREATE MACRO max(x) AS (SELECT count(*) FROM _raw_samples);\n{EMBEDDED_VIEWS_SQL}");
+    let b = Backend::InProc(Arc::new(
+        Reader::new(core.shared.clone(), HttpCfg::default(), views, dict(3600).entries).unwrap(),
+    ));
+    let c = cache();
+    let sql = format!("SELECT value, (SELECT query FROM query_texts) n FROM ({})", query(END));
+    let old = check(&c, &b, &core, &sql, Served::Miss).await;
+    append(&mut core, END + 1, 100.0);
+    let new = check(&c, &b, &core, &sql, Served::Miss).await;
+    assert_ne!(old, new);
+    assert_eq!(c.stats_json()["invalidations"]["unbounded"], 1);
 }

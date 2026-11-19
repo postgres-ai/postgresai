@@ -45,7 +45,8 @@ pub fn take() -> Option<ReadRange> {
     RANGE.with(|r| r.borrow_mut().take())
 }
 
-/// Prove every relation is an evaluator call, a constant table, or a CTE proven in this scope.
+/// Prove every relation is an evaluator call, a constant table, a verified catalog view,
+/// or a CTE proven in this scope.
 /// Unknown macros and SQL views keep generation-only caching.
 pub fn bounded_sql(
     v: &serde_json::Value,

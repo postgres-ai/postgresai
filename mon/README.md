@@ -423,11 +423,16 @@ elapsed time. Measure HTTP time separately: cached bodies retain the original `e
 Identical evaluator queries over fixed historical ranges can stay in the result cache across
 flushes of unrelated metrics or flushes that add only newer samples. Metric hash prefixes in
 flush-file metadata prove unrelated data safe; collisions or missing metadata stay conservative.
-Sample additions on rollup-covered days intersecting the fetch window invalidate cached results
-even for unrelated or newer samples: another sample file can disable that day's rollups and change the answer.
+Sample additions invalidate when they can disable a rollup on a day intersecting the fetch window,
+even for unrelated or newer samples. A retained rollup on a day already using raw files does not
+cause this invalidation. Same-day series additions remain conservative because label-only queries
+can expose the new series without samples in the window.
 Related overlapping data, compaction, retention, and changes to the query dictionary invalidate
-affected entries. Registry and rollup changes are handled conservatively. Raw SQL and queries
-with unproven dependencies remain valid for one catalog generation. Compiled Grafana targets send raw times in a leading `pgai-window-v1`
+affected entries. Registry and rollup changes are handled conservatively. Evaluator queries may
+join the verified built-in `query_texts` view; query-text file changes invalidate bounded entries
+regardless of timestamp. Other mixed raw-table queries and queries with unproven dependencies
+remain valid for one catalog generation. `/health` reports entry invalidations by reason under
+`cache.l1.invalidations`. Compiled Grafana targets send raw times in a leading `pgai-window-v1`
 header. The parent expands their numeric window parameters before keying and running the SQL.
 Reloads with the same aligned window and other parameters share a cache entry. Raw table bounds,
 instant alignment, and separately rounded range durations keep their own values in the key.

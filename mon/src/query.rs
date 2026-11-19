@@ -306,6 +306,7 @@ pub struct Reader {
     pub eval: crate::eval::EvalHandle,
     dict: Mutex<crate::dictionary::Dictionary>,
     bounded_macros: std::sync::OnceLock<(std::collections::HashSet<String>, std::collections::HashSet<String>)>,
+    bounded_relations: std::sync::OnceLock<std::collections::HashSet<String>>,
     /// Scalar functions whose result can change between runs of the same SQL at the same
     /// catalog generation (DuckDB's own stability metadata plus clock functions it labels
     /// CONSISTENT): a query calling one is not cached.
@@ -733,6 +734,7 @@ impl Reader {
             views_sql,
             dict: Mutex::new(crate::dictionary::Dictionary::new(dict)),
             bounded_macros: Default::default(),
+            bounded_relations: Default::default(),
             mirror,
         };
         r.refresh()?;
@@ -948,7 +950,60 @@ impl Reader {
             return Err(e.into());
         }
         if vg == u64::MAX {
+            let view_sql = |name: &str| -> anyhow::Result<String> {
+                let mut q = admin.prepare(
+                    "SELECT sql FROM duckdb_views() WHERE schema_name = 'main' AND lower(view_name) = ? \
+                     UNION ALL SELECT sql FROM duckdb_tables() WHERE schema_name = 'main' AND lower(table_name) = ?",
+                )?;
+                let mut rows = q.query([name, name])?;
+                let sql = rows
+                    .next()?
+                    .ok_or_else(|| anyhow::anyhow!("missing view {name}"))?
+                    .get(0)?;
+                anyhow::ensure!(rows.next()?.is_none(), "ambiguous view {name}");
+                Ok(sql)
+            };
+            let raw_texts = view_sql("_raw_query_texts")?;
             admin.execute_batch(&self.views_sql)?;
+            // Only the built-in view over the catalog's query-text files is bounded.
+            // Custom views can read other tables, so compare DuckDB's canonical definitions.
+            let definition = EMBEDDED_VIEWS_SQL
+                .split("CREATE OR REPLACE VIEW query_texts AS")
+                .nth(1)
+                .unwrap()
+                .split(';')
+                .next()
+                .unwrap();
+            let raw_unchanged = raw_texts == view_sql("_raw_query_texts").unwrap_or_default();
+            let reference = if raw_unchanged
+                && admin
+                    .execute_batch(&format!("CREATE TEMP VIEW _pgai_cache_texts AS {definition}"))
+                    .is_ok()
+            {
+                let reference = view_sql("_pgai_cache_texts").ok();
+                admin.execute_batch("DROP VIEW _pgai_cache_texts")?;
+                reference
+            } else {
+                None
+            };
+            let actual = view_sql("query_texts").unwrap_or_default();
+            // Canonical text alone does not prove what an overridden function reads.
+            let shadowed: bool = admin.query_row(
+                "SELECT count(*) > 0 FROM duckdb_functions() WHERE function_type IN ('macro', 'table_macro') \
+                 AND lower(function_name) IN ('min', 'max', 'read_parquet', 'range', 'error')",
+                [],
+                |r| r.get(0),
+            )?;
+            let verified = !shadowed
+                && reference
+                    .as_ref()
+                    .and_then(|sql| sql.split_once(" AS "))
+                    .is_some_and(|(_, body)| actual.split_once(" AS ").is_some_and(|(_, actual)| actual == body));
+            let _ = self.bounded_relations.set(if verified {
+                ["query_texts".to_string()].into_iter().collect()
+            } else {
+                Default::default()
+            });
         }
         if let Some(m) = &self.mirror {
             mirror_gc(&m.dir, &ms.keep, Duration::from_secs(600));
@@ -1006,7 +1061,7 @@ impl Reader {
                 if trees.iter().filter(|(n, _)| n == name).all(|(_, tree)| {
                     tree["error"] == false
                         && ast_cacheable(tree, &self.volatile)
-                        && crate::readset::bounded_sql(tree, &names, &safe, &Default::default())
+                        && crate::readset::bounded_sql(tree, &names, &safe, self.bounded_relations.get().unwrap())
                 }) {
                     safe.insert(name.clone());
                 }
@@ -1054,7 +1109,7 @@ impl Reader {
             ));
         }
         let bounded = self.bounded_macros.get().is_some_and(|(names, safe)| {
-            crate::readset::bounded_sql(&v["statements"], names, safe, &Default::default())
+            crate::readset::bounded_sql(&v["statements"], names, safe, self.bounded_relations.get().unwrap())
         });
         Ok((ast_cacheable(&v["statements"], &self.volatile), bounded))
     }
