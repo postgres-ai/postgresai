@@ -139,7 +139,9 @@ client ─► POST /sql ─► auth ─► result cache ─► admission ─► 
 2. **Result cache** (`qcache.rs`). Key: expanded SQL text, response format, views hash and dictionary
    version. Evaluator-only queries record the union of their bound fetch windows, including
    lookback, and metric hash prefixes (the high 16 bits of series IDs). Sample and series
-   flush files record their prefixes in the catalog. A disjoint prefix set proves an added
+   flush files record their prefixes in the catalog. Sample additions on rollup-covered days
+   intersecting the fetch window invalidate first: even unrelated or newer samples can disable
+   that day's rollups and change the answer. Otherwise, a disjoint prefix set proves an added
    file unrelated, even when its samples overlap the window. Hash collisions and missing
    metadata remain conservative. Otherwise, added samples must start after the fetch end;
    series additions must also fall outside the selected days or months. Evaluator file
@@ -160,11 +162,11 @@ client ─► POST /sql ─► auth ─► result cache ─► admission ─► 
 3. **Admission** (`admission.rs`). `http.max_concurrent` queries run at once (default: one per
    core, at most 4). Rust `available_parallelism()` honors Linux cgroup v2 quotas and affinity.
    Compose gives pgai-mon 2.0 CPUs, normally two slots; tighter ancestor limits still apply.
-   With one or two slots, heavy queries may use every slot. Waiting short queries get the
-   next free slot before waiting heavy queries, even aged ones; they do not preempt running
-   queries. This uses both CPUs for panels while keeping short queries out of the heavy queue.
-   A continuous short-query load can defer heavy waiters on these small hosts. With three or
-   more slots, one remains reserved for short queries and arrival-plus-cost ageing applies.
+   With one or two slots, heavy queries may use every slot. Waiters are ordered by arrival
+   time plus expected service time. Fresh short queries go before fresh heavy waiters;
+   once a heavy waiter's priority deadline passes, new shorts cannot bypass it.
+   Queries do not preempt running queries. With three or more slots, one remains reserved
+   for short queries; the same ageing order applies to eligible waiters.
    The heavy-query RSS gate, big-shape isolation and exclusive retry rules still apply.
    Up to `http.queue_max` (64) wait for at most `http.queue_wait_ms` (30 s); beyond that the
    answer is `busy`, HTTP 429.

@@ -348,7 +348,22 @@ impl QueryCache {
                 if gen_now > st.gen {
                     let changes = st.snapshot.as_ref().and_then(|old| snapshot.changes(old));
                     if let Some((added, removed)) = changes {
-                        let old_epoch = st.snapshot.as_ref().unwrap().data_epoch;
+                        let old = st.snapshot.as_ref().unwrap();
+                        let old_epoch = old.data_epoch;
+                        // All rollup tiers depend on the whole day's sample-file count.
+                        let rollup_days: std::collections::HashSet<_> = old
+                            .files
+                            .iter()
+                            .chain(snapshot.files.iter())
+                            .flat_map(|files| files.iter())
+                            .filter(|f| f.kind == crate::eval::rollup::KIND)
+                            .map(|f| f.day)
+                            .collect();
+                        let changed_rollup_days: Vec<_> = added
+                            .iter()
+                            .filter(|f| f.kind == "samples" && rollup_days.contains(&f.day))
+                            .map(|f| f.day)
+                            .collect();
                         // An unexplained data epoch change cannot be proved harmless.
                         let known = old_epoch == snapshot.data_epoch || !added.is_empty() || !removed.is_empty();
                         let keep: Vec<_> = st
@@ -359,6 +374,9 @@ impl QueryCache {
                                 let r = e.range.as_ref()?;
                                 (known
                                     && k.dict == snapshot.dict_version
+                                    && !changed_rollup_days.iter().any(|day| {
+                                        *day >= crate::model::day_of(r.start) && *day <= crate::model::day_of(r.end)
+                                    })
                                     && added.iter().all(|f| {
                                         unrelated(f, r)
                                             || (!matches!(

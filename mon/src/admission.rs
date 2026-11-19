@@ -3,9 +3,9 @@
 //! - `slots` queries run at once (default one per core, at most 4: `HttpCfg::resolve`).
 //! - **Short queries bypass heavy ones.** A query is short when its expected service time
 //!   (`Cost`) is under `short_ms`. With at least three slots, one is kept for short queries.
-//!   Smaller hosts let heavy queries use every slot; waiting short queries get the next slot.
+//!   Smaller hosts let heavy queries use every slot.
 //! - **Order among waiters** is arrival time plus expected service time: shortest first, with
-//!   ageing. On one/two-slot hosts, short-query priority overrides this order across classes.
+//!   ageing. Once a heavy waiter's priority deadline passes, new shorts cannot bypass it.
 //! - **Memory gate.** A heavy query starts only while the reader's RSS is under `mem_gate`
 //!   bytes, or when no other heavy query runs. All slots share one reader process and one
 //!   RSS cap (sqlproc.rs), so this keeps a second and third heavy query from starting on top of
@@ -23,7 +23,7 @@
 //! panel whose window slides keeps its history. Unknown shapes are guessed from the text.
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use tokio::time::Instant;
 use xxhash_rust::xxh3::xxh3_64;
 
 pub type MemProbe = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
@@ -269,16 +269,10 @@ impl Admission {
             let mem_ok = st.running_heavy == 0
                 || self.mem_gate == 0
                 || self.mem.as_ref().and_then(|m| m()).is_none_or(|r| r < self.mem_gate);
-            // Without a reserved lane, a queued short query gets the next free slot,
-            // even when a heavy waiter has aged ahead of it.
-            let short_first = (self.slots < 3)
-                .then(|| st.waiters.iter().position(|w| !w.heavy))
-                .flatten();
-            let pick = short_first.or_else(|| {
-                st.waiters
-                    .iter()
-                    .position(|w| !w.heavy || if w.big { big_ok } else { heavy_ok && mem_ok })
-            });
+            let pick = st
+                .waiters
+                .iter()
+                .position(|w| !w.heavy || if w.big { big_ok } else { heavy_ok && mem_ok });
             let Some(i) = pick else {
                 if heavy_ok && !mem_ok && !st.waiters.is_empty() {
                     st.mem_deferred += 1;
@@ -420,10 +414,6 @@ mod tests {
         tokio::pin!(h3, h4);
         assert!(futures_util::poll!(&mut h3).is_pending());
         assert!(futures_util::poll!(&mut h4).is_pending());
-        // Even aged heavy waiters cannot take the next slot from a waiting short query.
-        for waiter in &mut a.st.lock().unwrap().waiters {
-            waiter.prio = -1.0;
-        }
         let s1 = a.acquire(&short, false, w);
         tokio::pin!(s1);
         assert!(futures_util::poll!(&mut s1).is_pending());
@@ -439,6 +429,51 @@ mod tests {
         drop(h2);
         let _h4 = h4.await.unwrap();
         drop(h3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sustained_short_traffic_does_not_starve_heavy_queries() {
+        use std::time::Duration;
+
+        for slots in [1, 2] {
+            let a = Admission::new(slots, 50.0, 0, None);
+            let heavy = a.cost("SELECT * FROM samples");
+            let short = a.cost("SELECT 1");
+            let wait = Duration::from_secs(30);
+            let mut running = Vec::new();
+            for _ in 0..slots {
+                running.push(a.acquire(&heavy, false, wait).await.unwrap());
+            }
+            let h = a.acquire(&heavy, false, wait);
+            tokio::pin!(h);
+            assert!(futures_util::poll!(&mut h).is_pending());
+            let mut admitted = false;
+            // Keep a short queued at every completion for longer than the queue timeout.
+            for tick in 1..=310 {
+                tokio::time::advance(Duration::from_millis(100)).await;
+                let s = a.acquire(&short, false, wait);
+                tokio::pin!(s);
+                assert!(futures_util::poll!(&mut s).is_pending());
+                drop(running.pop());
+                if !admitted {
+                    match futures_util::poll!(&mut h) {
+                        std::task::Poll::Ready(Some(p)) => {
+                            assert_eq!(tick, 10, "aged heavy gets the next slot with {slots} slots");
+                            admitted = true;
+                            assert!(futures_util::poll!(&mut s).is_pending());
+                            drop(p);
+                        }
+                        std::task::Poll::Ready(None) => panic!("heavy timed out with {slots} slots"),
+                        std::task::Poll::Pending => {}
+                    }
+                }
+                let std::task::Poll::Ready(Some(p)) = futures_util::poll!(&mut s) else {
+                    panic!("short must run after the slot is released");
+                };
+                running.push(p);
+            }
+            assert!(admitted, "heavy starved with {slots} slots");
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

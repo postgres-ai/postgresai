@@ -507,6 +507,87 @@ async fn unrelated_self_scrape_flushes_keep_identical_results() {
 }
 
 #[tokio::test]
+async fn sample_additions_on_rollup_days_invalidate_cached_results() {
+    let hour = 3_600_000;
+    let day = END - hour;
+    let end = day + 3 * hour;
+    let m = series_id("m", &[]);
+    let unrelated = series_id("unrelated", &[]);
+    assert_ne!(m >> 48, unrelated >> 48);
+    // Cover both keep exemptions: disjoint prefixes and samples after the fetch end.
+    for (id, ts) in [(unrelated, day + 2 * hour + 3000), (m, end + 1000)] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = StoreCore::open(dir.path(), &StoreCfg::default()).unwrap();
+        core.append(Record::Series(vec![SeriesDef {
+            series_id: m,
+            metric: "m".into(),
+            labels: vec![],
+            first_seen: day + hour + 1000,
+        }]))
+        .unwrap();
+        core.append(Record::Samples(
+            [(hour + 1000, 1e16), (2 * hour + 1000, -1e16), (2 * hour + 2000, 1.0)]
+                .into_iter()
+                .map(|(offset, value)| Sample {
+                    series_id: m,
+                    ts: day + offset,
+                    value,
+                })
+                .collect(),
+        ))
+        .unwrap();
+        core.flush().unwrap();
+        core.compactor().unwrap().run_once(day + 2 * DAY_MS, true).unwrap();
+        {
+            let cat = core.shared.catalog.lock().unwrap();
+            let samples: Vec<_> = cat.files_of("samples").collect();
+            assert_eq!(samples.len(), 1);
+            assert_eq!(samples[0].level, 2);
+            assert_eq!(cat.files_of(pgai_mon::eval::rollup::KIND).count(), 1);
+        }
+        let b = Backend::InProc(Arc::new(
+            Reader::new(
+                core.shared.clone(),
+                HttpCfg::default(),
+                EMBEDDED_VIEWS_SQL.into(),
+                vec![],
+            )
+            .unwrap(),
+        ));
+        let c = cache();
+        let sql = format!(
+            "SELECT value FROM prom_sum_over_time('m', [], {end}, {end}, {hour}, {})",
+            2 * hour
+        );
+        let predicate = format!("{sql} WHERE value > 0");
+        assert_eq!(check(&c, &b, &core, &sql, Served::Miss).await, "value\r\n0.0\r\n");
+        assert_eq!(check(&c, &b, &core, &predicate, Served::Miss).await, "value\r\n");
+        // A sample addition on a later day does not affect this day's rollup eligibility.
+        core.append(Record::Samples(vec![Sample {
+            series_id: m,
+            ts: day + DAY_MS + hour,
+            value: 42.0,
+        }]))
+        .unwrap();
+        core.flush().unwrap();
+        for q in [&sql, &predicate] {
+            check(&c, &b, &core, q, Served::Hit).await;
+        }
+        core.append(Record::Samples(vec![Sample {
+            series_id: id,
+            ts,
+            value: 42.0,
+        }]))
+        .unwrap();
+        core.flush().unwrap();
+        for q in [&sql, &predicate] {
+            assert_eq!(check(&c, &b, &core, q, Served::Miss).await, "value\r\n1.0\r\n");
+            check(&c, &b, &core, q, Served::Hit).await;
+        }
+    }
+}
+
+#[tokio::test]
 async fn dependencies_include_every_metric_even_when_no_series_match() {
     let dir = tempfile::tempdir().unwrap();
     let mut core = StoreCore::open(dir.path(), &StoreCfg::default()).unwrap();

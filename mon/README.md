@@ -423,6 +423,8 @@ elapsed time. Measure HTTP time separately: cached bodies retain the original `e
 Identical evaluator queries over fixed historical ranges can stay in the result cache across
 flushes of unrelated metrics or flushes that add only newer samples. Metric hash prefixes in
 flush-file metadata prove unrelated data safe; collisions or missing metadata stay conservative.
+Sample additions on rollup-covered days intersecting the fetch window invalidate cached results
+even for unrelated or newer samples: another sample file can disable that day's rollups and change the answer.
 Related overlapping data, compaction, retention, and changes to the query dictionary invalidate
 affected entries. Registry and rollup changes are handled conservatively. Raw SQL and queries
 with unproven dependencies remain valid for one catalog generation. Compiled Grafana targets send raw times in a leading `pgai-window-v1`
