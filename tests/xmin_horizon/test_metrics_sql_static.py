@@ -307,12 +307,10 @@ class xminHorizonSqlStaticTest(unittest.TestCase):
         self.assertEqual(targets[0].get("format"), "table")
         sql_text = normalized(target_sql(targets[0]))
         self.assertIn("prom_last_over_time(('pgwatch_pg_autovacuum_blocked_wait_seconds')", sql_text)
-        # Instant: evaluated once, at the end of the range, over a 1m lookback.
-        self.assertRegex(
-            sql_text,
-            r"\(cast\(\(\$\{__to\} - \$\{__to\} % \$\{__interval_ms\}\) as bigint\)\), "
-            r"\(cast\(\(\$\{__to\} - \$\{__to\} % \$\{__interval_ms\}\) as bigint\)\)",
-        )
+        # Instant: evaluated once, at the end of the range, over a 1m lookback. pgai-mon
+        # aligns the end from the window header before it runs the query.
+        self.assertTrue(sql_text.startswith("-- pgai-window-v1 ${__from} ${__to} ${__interval_ms} instant"))
+        self.assertIn("($__pgai_end_ms), ($__pgai_end_ms)", sql_text)
         self.assertIn("(60000::bigint))", sql_text)
 
     def test_replication_slots_metric_preserves_null_xmin_age(self) -> None:
