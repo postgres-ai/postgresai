@@ -389,8 +389,13 @@ project's `.env`, with defaults 8765 and 3000. `scripts/run_reporter_local.sh` k
 an explicit `PGAI_MON_URL`; `tests/e2e.cli.sh` accepts `GRAFANA_URL` and otherwise uses
 `DOCKER_HOST` for Grafana's host.
 
+Monitoring v4 defaults to 2.0 CPUs for pgai-mon (`PGAI_MON_CPUS`), matching the combined budget
+of pgwatch-postgres, pgwatch-prometheus, sink-prometheus and sink-postgres. Automatic query
+concurrency honors Linux cgroup CPU quotas: normally two slots with this limit. Grafana defaults
+to 768 MiB (`GRAFANA_MEM=805306368`). Override these limits in `.env`.
+
 Both stacks collect from the database, so it serves two collectors. Their memory limits
-add up (about 4.5 GiB for monitoring v4 and 7.3 GiB for the old stack); the host needs
+add up (about 4.7 GiB for monitoring v4 and 7.3 GiB for the old stack); the host needs
 room for both.
 
 ### Option B: Run Docker Compose directly

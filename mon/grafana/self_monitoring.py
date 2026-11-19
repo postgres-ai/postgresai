@@ -364,7 +364,7 @@ PANELS = [
 def target(ref, sql, fmt, instant, gp_range, gp_inst):
     cols = ["labels", "t", "value"] if "labels" in sql else ["t", "value"]  # a stat's sum has no labels
     body = C.wrap(C.inline(sql, {}, gp_inst if instant else gp_range), cols, fmt, [])
-    return C.infinity_target(ref, body, False, [])
+    return C.infinity_target(ref, C.window_header(body, instant), False, [])
 
 
 def build():

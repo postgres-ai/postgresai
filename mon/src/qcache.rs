@@ -1,5 +1,6 @@
 //! L1 result cache in the parent process.
 //!
+//! Grafana window parameters are expanded by the HTTP handler before keying and execution.
 //! Whole response bodies, keyed by the SQL text (trimmed, trailing `;` removed) plus the
 //! response format, dictionary version and a hash of the views/macros/evaluator version.
 //! Bounded evaluator results survive catalog changes proven outside their fetch window.

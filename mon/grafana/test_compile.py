@@ -142,11 +142,14 @@ class Emitted(unittest.TestCase):
                         self.assertNotIn(lit, body, f"{spec['census']} panel {i}{y['refId']}")
                     self.assertFalse(body.lstrip().startswith("{"), "a JSON-looking body is parsed as JSON")
                     self.assertTrue(set(re.findall(r"\$\{[^}]+\}", body)) <= ALLOWED_VARS, body)
+                    self.assertTrue(body.startswith("-- pgai-window-v1 ${__from} ${__to} ${__interval_ms} "))
+                    self.assertNotIn("${__to}", body.split("\n", 1)[1])
+                    self.assertNotIn("${__from}", body.split("\n", 1)[1])
                     if not x.get("instant"):  # range: aligned to the pinned step
-                        self.assertIn(f"${{__from}} - ${{__from}} % {C.STEP}", body)
-                        self.assertIn(f"${{__to}} - ${{__to}} % {C.STEP}", body)
+                        self.assertIn("$__pgai_start_ms", body)
+                        self.assertIn("$__pgai_end_ms", body)
                     else:
-                        self.assertIn("${__to} - ${__to} % ${__interval_ms}", body)
+                        self.assertIn("$__pgai_end_ms", body)
                     legend = {"matcher": {"id": "byFrameRefID", "options": y["refId"]},
                               "properties": [{"id": "displayName", "value": "${__field.labels.__series}"}]}
                     if table:

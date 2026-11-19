@@ -1663,6 +1663,10 @@ async fn post_sql(
             ),
         ));
     };
+    let sql = match crate::grafana::expand(&sql) {
+        Ok(sql) => sql,
+        Err(e) => return err_response(e),
+    };
     let (op, fmt) = (f.op(), f.key());
     // L1 result cache (qcache.rs): a hit or a coalesced follower needs no admission slot.
     let dict_version = match st.backend.dictionary_version() {

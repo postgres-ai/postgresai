@@ -127,7 +127,7 @@ services:
     # `mon local-install` writes as INSTANCE_JOBS_USER (or PGAI_MON_USER).
     # Unset: the image's unprivileged user.
     user: *pgai_mon_owner
-    cpus: ${PGAI_MON_CPUS:-1.0}
+    cpus: ${PGAI_MON_CPUS:-2.0}
     mem_limit: ${PGAI_MON_MEM:-1610612736}
     cap_drop:
       - ALL
@@ -197,7 +197,7 @@ services:
     scale: ${GRAFANA_SCALE:-1}
     cpus: ${GRAFANA_CPUS:-0.5}
     # Raise this together with pgai-mon http.chart_max_bytes (5 MiB) for larger charts.
-    mem_limit: ${GRAFANA_MEM:-536870912}
+    mem_limit: ${GRAFANA_MEM:-805306368}
     environment:
       GF_SECURITY_ADMIN_USER: monitor
       # No default: the CLI generates one at install (.pgwatch-config) and passes it.

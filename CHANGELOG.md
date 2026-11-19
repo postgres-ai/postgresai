@@ -2,8 +2,11 @@
 
 ## Unreleased
 
+- Monitoring v4 dashboard reloads share cached results when their aligned windows and other parameters are equal. Raw table windows and instant semantics stay exact; flushes overlapping the full fetch window still invalidate results (postgres-ai/postgresai#516).
+- Monitoring v4 gives pgai-mon 2.0 CPUs by default, matching the services it replaces and normally allowing two concurrent queries. Grafana's default memory limit rises from 512 to 768 MiB (postgres-ai/postgresai#516, postgres-ai/postgresai#515).
+
 - Monitoring v4 filters sample series and times before decoding values, reducing discarded rows in top-N dashboard scans of local Rust-compacted files (postgres-ai/postgresai#516).
-- Monitoring v4 keeps identical historical evaluator results cached across flushes that add only newer samples. Overlapping data and file replacement or removal invalidate them; moving Grafana time bounds still make distinct requests (postgres-ai/postgresai#516).
+- Monitoring v4 keeps identical historical evaluator results cached across flushes that add only newer samples. Overlapping data and file replacement or removal invalidate them (postgres-ai/postgresai#516).
 - Monitoring v4 queries pick up changed collection intervals after a successful config reload, without a restart. The metric dictionary and both query caches use its new version (postgres-ai/postgresai#518).
 
 - Monitoring v4 sends every chart target as CSV and replaces repeated full label sets with compact series IDs, keeping legends and link labels; tables keep JSON (postgres-ai/postgresai#515).

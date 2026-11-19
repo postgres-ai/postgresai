@@ -14,6 +14,7 @@ pub mod catalog;
 pub mod collector;
 pub mod config;
 pub mod eval;
+pub mod grafana;
 pub mod hoststats;
 pub mod ingest;
 pub mod kmerge;

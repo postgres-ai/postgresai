@@ -325,3 +325,110 @@ async fn multiple_evaluator_windows_are_unioned() {
     let new = check(&c, &b, &core, &sql, Served::Miss).await;
     assert_ne!(old, new);
 }
+
+/// Grafana's moving raw times identify the executed window, including any expanded fetch end.
+#[tokio::test]
+async fn http_grafana_windows_share_only_exact_results() {
+    use pgai_mon::query::AppState;
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = StoreCore::open(dir.path(), &StoreCfg::default()).unwrap();
+    seed(&mut core);
+    let b = Backend::InProc(Arc::new(
+        Reader::new(
+            core.shared.clone(),
+            HttpCfg::default(),
+            EMBEDDED_VIEWS_SQL.into(),
+            dict(3600).entries,
+        )
+        .unwrap(),
+    ));
+    let mut state = AppState::new(b.clone(), HttpCfg::default(), core.shared.clone());
+    state.cache = cache();
+    let app = pgai_mon::query::router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/sql?format=csv", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = reqwest::Client::new();
+    let send = |sql: String, fresh: String, want: &'static str| {
+        let (client, url, b) = (client.clone(), url.clone(), b.clone());
+        async move {
+            let response = client.post(url).body(sql.clone()).send().await.unwrap();
+            let status = response.status();
+            if status != 200 {
+                panic!("{sql}: {status}: {}", response.text().await.unwrap());
+            }
+            assert_eq!(response.headers()["x-pgai-cache"], want);
+            let body = response.text().await.unwrap();
+            assert_eq!(body, b.call("sql_csv", fresh).await.unwrap().body);
+            body
+        }
+    };
+    let window =
+        |raw: i64, mode: &str, body: &str| format!("-- pgai-window-v1 {} {raw} 30000 {mode}\n{body}", raw - 60_000);
+    let body = "SELECT t, value FROM prom_last('pgwatch_slow_v', [], $__pgai_start_ms, $__pgai_end_ms, $__pgai_step_ms) ORDER BY t";
+    let literal = |end: i64, instant: bool| {
+        format!(
+            "SELECT t, value FROM prom_last('pgwatch_slow_v', [], {}, {end}, {}) ORDER BY t",
+            if instant { end } else { end - 60_000 },
+            if instant { 300_000 } else { 30_000 }
+        )
+    };
+    let first = send(window(END + 1, "range", body), literal(END, false), "miss").await;
+    let hit = send(window(END + 2, "range", body), literal(END, false), "hit").await;
+    assert_eq!(first, hit);
+    append(&mut core, END + 3, 99.0);
+    send(window(END + 4, "range", body), literal(END, false), "hit").await;
+    let next = send(
+        window(END + 30_001, "range", body),
+        literal(END + 30_000, false),
+        "miss",
+    )
+    .await;
+    assert_ne!(first, next);
+    send(window(END + 5, "instant", body), literal(END, true), "miss").await;
+    send(window(END + 6, "instant", body), literal(END, true), "hit").await;
+
+    // A subquery can fetch the last bucket after the aligned end. Such a flush must miss.
+    let extended = "SELECT t, value FROM prom_last('pgwatch_slow_v', [], $__pgai_start_ms, $__pgai_end_ms + $__pgai_step_ms, $__pgai_step_ms) ORDER BY t";
+    let fresh = format!(
+        "SELECT t, value FROM prom_last('pgwatch_slow_v', [], {}, {}, 30000) ORDER BY t",
+        END - 60_000,
+        END + 30_000
+    );
+    let old = send(window(END + 7, "range", extended), fresh.clone(), "miss").await;
+    append(&mut core, END + 10_000, 123.0);
+    let new = send(window(END + 8, "range", extended), fresh.clone(), "miss").await;
+    assert_ne!(old, new);
+    append(&mut core, END + 30_001, 321.0);
+    send(window(END + 9, "range", extended), fresh, "hit").await;
+
+    // Raw tables and independent raw end labels must remain distinct, even within one step.
+    for raw in [END + 11, END + 12] {
+        let table = format!("SELECT {raw} AS time, count(*) AS n FROM samples WHERE epoch_ms(ts) <= {raw}");
+        send(table.clone(), table, "miss").await;
+        let body = format!("SELECT $__pgai_end_ms AS aligned, {raw} AS raw");
+        send(
+            window(raw, "instant", &body),
+            format!("SELECT {END}::BIGINT AS aligned, {raw} AS raw"),
+            "miss",
+        )
+        .await;
+    }
+    // The same grid with a changed $__range still has a different result and key.
+    for (span, rounded) in [(60_499, 60_000), (60_500, 61_000)] {
+        let sql = format!(
+            "-- pgai-window-v1 {} {} 30000 range\nSELECT $__pgai_range_ms AS duration",
+            END - span,
+            END
+        );
+        send(sql, format!("SELECT {rounded}::BIGINT AS duration"), "miss").await;
+    }
+    let response = client
+        .post(url)
+        .body("-- pgai-window-v1 0 1 0 range\nSELECT 1")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+    server.abort();
+}

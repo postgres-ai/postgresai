@@ -9,7 +9,8 @@ Reads old/config/grafana/dashboards/Dashboard_<n>_*.json (never written), mon/sq
 mon/grafana/cases.py, and writes them under the same uids and titles (links and bookmarks keep working). The
 copies keep the original panels, layout, units and legends. Every PromQL target becomes an
 Infinity target that POSTs `/sql?format=csv` (tables: `format=objects`) with the ported SQL as a text/plain body:
-- getvariable() parameters become Grafana expressions (GRAFANA_PARAMS). start and end are
+- Window parameters use a leading pgai-window-v1 header and reserved numeric placeholders,
+  expanded by pgai-mon before cache lookup and execution. start and end are
   aligned down to the step, and $__rate_interval becomes
   max(interval + scrape, 4 x scrape) with scrape = 5 s, the Prometheus datasource's
   scrapeInterval. Range targets of 7 d or more pin the step to the rollup tier (STEP), and
@@ -67,6 +68,7 @@ def pin_step(span_ms, iv):
 
 
 def grafana_params(step):
+    # Keep the SQL expressions as a reference for HTTP parity tests of grafana.rs.
     al = lambda x: f"CAST(({x} - {x} % {step}) AS BIGINT)"  # noqa: E731
     return {
         "start_ms": al("${__from}"),
@@ -117,9 +119,22 @@ FILTER_VARS = {"wet_re": "wait_event_type", "we_re": "wait_event", "query_id": "
 def dashboard_params(src):
     names = {v.get("name") for v in src.get("templating", {}).get("list", [])}
     keep = lambda ps: {k: v for k, v in ps.items() if k not in FILTER_VARS or FILTER_VARS[k] in names}  # noqa: E731
-    gp = keep(GRAFANA_PARAMS)
+    def window(ps):
+        return {k: f"$__pgai_{k}" if k in ("start_ms", "end_ms", "step_ms", "interval_ms", "rate_interval_ms", "range_ms")
+                and "${" in v else v for k, v in keep(ps).items()}
+    gp = window(GRAFANA_PARAMS)
     # an instant target (table/stat panel): one point at the range end
-    return keep(GRAFANA_PARAMS_RANGE), dict(gp, start_ms=gp["end_ms"])
+    gp_range = window(GRAFANA_PARAMS_RANGE)
+    # The range interval and evaluator step are the same bucket (including ASH integration).
+    gp_range["interval_ms"] = gp_range["step_ms"]
+    return gp_range, dict(gp, start_ms=gp["end_ms"])
+
+
+def window_header(sql, instant):
+    """pgai-mon expands these numeric parameters before cache lookup and execution."""
+    mode = "instant" if instant else "range"
+    return f"-- pgai-window-v1 ${{__from}} ${{__to}} ${{__interval_ms}} {mode}\n{sql}"
+
 
 DASHBOARDS = [
     dict(src="Dashboard_1_Node_performance_overview.json", census="D2", uid="f90500a0-a12e-4081-a2f0-07ed96f27915",
@@ -716,6 +731,7 @@ def compile_dashboard(spec, by_id, probe_url):
             assert all("__sid" < x for x in extra)
             body = wrap_table(inner, cols, keys) if table else \
                 wrap(inner, cols, legend, extra, ash=ash, by=by, **shape)
+            body = window_header(body, instant)
             new.append(infinity_target(t["refId"], body, t.get("hide"), extra, keys, **shape))
             if table:
                 table_refs.append(t["refId"])

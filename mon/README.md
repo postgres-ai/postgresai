@@ -297,10 +297,16 @@ Top level:
 All monitoring v4 time-series targets use CSV; table targets keep JSON. Charts use compact
 `__sid` ranks where a separate series identity is needed, instead of repeating full label sets.
 Legends and data-link labels are preserved. Infinity copies response bodies into frame metadata:
-at Grafana's default 512 MiB, an
+with Grafana's previous 512 MiB limit, an
 11.1 MB JSON response of 68,800 points exhausted memory, while the same points as 3.0 MB CSV peaked at 393 MB.
+Grafana now defaults to 768 MiB (`GRAFANA_MEM=805306368`) for more headroom.
 The 5 MiB chart limit leaves room below the measured CSV failure range; narrow the time range or
 filter, or raise `http.chart_max_bytes` together with Grafana's `GRAFANA_MEM`.
+
+Compose defaults to `PGAI_MON_CPUS=2.0`, the combined CPU budget of the four services pgai-mon
+replaces. Automatic query concurrency uses Rust's `available_parallelism()`, capped at four.
+On Linux it respects cgroup v2 CPU quotas and affinity: 2.0 gives two slots unless a tighter
+ancestor quota or CPU affinity limits it further.
 
 `http`:
 
@@ -418,8 +424,12 @@ Identical evaluator queries over fixed historical ranges can stay in the result 
 flushes that add only newer samples. Overlapping data, compaction, retention, and changes to
 the query dictionary invalidate affected entries. Series, registry and rollup changes are
 handled conservatively. Raw SQL and queries with unproven dependencies remain valid for one
-catalog generation. Grafana's moving `${__to}` changes the SQL text even when its aligned end
-is unchanged, so repeated loads ending at “now” still miss this cache.
+catalog generation. Compiled Grafana targets send raw times in a leading `pgai-window-v1`
+header. The parent expands their numeric window parameters before keying and running the SQL.
+Reloads with the same aligned window and other parameters share a cache entry. Raw table bounds,
+instant alignment, and separately rounded range durations keep their own values in the key.
+A flush inside the full fetch window, including a subquery's last bucket after the aligned end,
+invalidates the entry; only flushes beyond that window can preserve a hit.
 
 ### Retention
 

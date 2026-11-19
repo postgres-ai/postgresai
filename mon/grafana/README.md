@@ -49,6 +49,12 @@ or the pgwatch Postgres sink: the four tables that did (Dashboard 2's pg_stat_st
 Dashboard 3's query text, Dashboard 8's table stats, Dashboard 10's B-tree bloat) run the SQL in
 `../sql/reports/panels/` (`TABLE_PANELS` in `compile.py`), keeping their column names.
 
+Compiled PromQL targets begin with `-- pgai-window-v1 from to interval range|instant`.
+pgai-mon expands `$__pgai_*` window parameters into BIGINT literals before cache lookup and
+execution. Equal aligned windows therefore reuse results even when Grafana's raw times move.
+The four raw SQL tables keep their exact bounds. Deploy regenerated dashboards with the matching
+pgai-mon binary; older binaries do not understand these parameters.
+
 The grouped ASH charts use `ash_by.sql`'s `r(k,t,value)` and `names(k,labels)` relations.
 The compiler formats each group's legend in a materialized `rendered` relation before joining
 the time grid. Keep that work before the join: formatting every point is costly for many query IDs.

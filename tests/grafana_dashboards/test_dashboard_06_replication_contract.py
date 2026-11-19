@@ -26,7 +26,7 @@ DETAIL_MARKER = "select one standby"
 REPLICA_FILTER = "['application_name', '=~', '${replica:regex}']"
 # the gate: steps whose $__range-wide window holds exactly one standby
 GATE_MARKER = "HAVING count(DISTINCT coalesce(labels[('application_name')], '')) = 1"
-RANGE_WINDOW = "CAST(round((${__to} - ${__from}) / 1000.0) * 1000 AS BIGINT)"
+RANGE_WINDOW = "$__pgai_range_ms"
 BY_APPLICATION = re.compile(
     r"p_by := CAST\(\(\['application_name'\]\) AS VARCHAR\[\]\)|prom_by\(labels, \['application_name'\]\)")
 SERIES_BY_APPLICATION = ", coalesce(q.labels['application_name'], '') AS __series"

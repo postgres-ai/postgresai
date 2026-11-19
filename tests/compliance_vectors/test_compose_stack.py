@@ -36,8 +36,8 @@ REQUIRED_ENV = {
 SERVICE_LIMITS: dict[str, tuple[str, str, str, str]] = {
     "target-db": ("TARGET_DB_CPUS", "0.2", "TARGET_DB_MEM", str(768 * 1024**2)),
     "target-standby": ("TARGET_STANDBY_CPUS", "0.2", "TARGET_STANDBY_MEM", str(768 * 1024**2)),
-    "pgai-mon": ("PGAI_MON_CPUS", "1.0", "PGAI_MON_MEM", str(1536 * 1024**2)),
-    "grafana": ("GRAFANA_CPUS", "0.5", "GRAFANA_MEM", str(512 * 1024**2)),
+    "pgai-mon": ("PGAI_MON_CPUS", "2.0", "PGAI_MON_MEM", str(1536 * 1024**2)),
+    "grafana": ("GRAFANA_CPUS", "0.5", "GRAFANA_MEM", str(768 * 1024**2)),
     "postgres-reports": ("POSTGRES_REPORTS_CPUS", "1.0", "POSTGRES_REPORTS_MEM", str(1792 * 1024**2)),
     "instance-jobs": ("INSTANCE_JOBS_CPUS", "0.25", "INSTANCE_JOBS_MEM", str(256 * 1024**2)),
     "self-cadvisor": ("CADVISOR_CPUS", "0.25", "CADVISOR_MEM", str(384 * 1024**2)),

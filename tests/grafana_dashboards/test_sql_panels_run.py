@@ -368,23 +368,30 @@ def test_grafana_e2e_sends_csv_target_unchanged(monkeypatch):
     assert all(sent[0][key] == value for key, value in target.items())
 
 
-def test_ash_panel_identical_http_request_hits_cache(pgai_mon):
+def test_ash_panel_moving_times_within_step_hit_cache(pgai_mon):
     path = next((REPO_ROOT / "mon/grafana/dashboards").glob("Dashboard_4_*.json"))
     panel = next(p for p in CP.walk(json.loads(path.read_text())["panels"]) if p.get("id") == 3)
     variables = {k: [v] for k, v in dict(
         cluster_name="local", node_name="node-01", db_name="target_database",
         wait_event_type=CP.CustomAll(".*"), wait_event=CP.CustomAll(".*"),
     ).items()}
-    sql, left = CP.interpolate(panel["targets"][0]["url_options"]["data"], variables,
-                               CP.builtin_vars(FIXTURE_END_MS - 6420000, FIXTURE_END_MS, 30000))
-    assert not left
-    req = urllib.request.Request(pgai_mon + "/sql?format=csv", sql.encode(),
-                                 {"Content-Type": "text/plain"})
-    with urllib.request.urlopen(req) as response:
+    def request(offset):
+        end = FIXTURE_END_MS - FIXTURE_END_MS % 30000 + offset
+        sql, left = CP.interpolate(panel["targets"][0]["url_options"]["data"], variables,
+                                   CP.builtin_vars(end - 6420000, end, 30000))
+        assert not left
+        # Isolate this request from other fixture queries in the module's shared server.
+        sql += "\n-- moving-window regression"
+        return urllib.request.Request(pgai_mon + "/sql?format=csv", sql.encode(),
+                                      {"Content-Type": "text/plain"})
+    with urllib.request.urlopen(request(1)) as response:
+        assert response.headers["x-pgai-cache"] == "miss"
         first = response.read()
-    with urllib.request.urlopen(req) as response:
+    with urllib.request.urlopen(request(2)) as response:
         assert response.headers["x-pgai-cache"] == "hit"
         assert response.read() == first
+    with urllib.request.urlopen(request(30001)) as response:
+        assert response.headers["x-pgai-cache"] == "miss"
     assert len(list(csv.DictReader(io.StringIO(first.decode())))) > 0
 
 
@@ -553,3 +560,29 @@ def test_ash_empty_range_keeps_empty_result(pgai_mon):
     got = _csv_body(pgai_mon, sql)
     assert got == _csv_body(pgai_mon, original)
     assert len(got.splitlines()) == 1
+
+
+@pytest.mark.parametrize("span,interval", [
+    (60_499, 30_000), (60_500, 30_000), (6 * 86_400_000, 600_000),
+    (7 * 86_400_000, 600_000), (30 * 86_400_000, 7_200_001),
+    (90 * 86_400_000, 7_200_000),
+])
+@pytest.mark.parametrize("instant", [False, True])
+def test_compiler_window_parameters_match_previous_sql(pgai_mon, span, interval, instant):
+    # Compare the new transport against the original DuckDB expressions, not Python rounding.
+    old = dict(DC.GRAFANA_PARAMS if instant else DC.GRAFANA_PARAMS_RANGE)
+    if instant:
+        old["start_ms"] = old["end_ms"]
+    new = DC.dashboard_params({})[int(instant)]
+    names = ("start_ms", "end_ms", "step_ms", "interval_ms", "rate_interval_ms", "range_ms")
+    select = lambda params: "SELECT " + ", ".join(f"{params[k]} AS {k}" for k in names)
+    builtins = CP.builtin_vars(FIXTURE_END_MS + 1234 - span, FIXTURE_END_MS + 1234, interval)
+    previous, left = CP.interpolate(select(old), {}, builtins)
+    assert not left
+    current, left = CP.interpolate(DC.window_header(select(new), instant), {}, builtins)
+    assert not left
+    before = CP.post(pgai_mon, previous)
+    after = CP.post(pgai_mon, current)
+    assert "error" not in before, before
+    assert "error" not in after, after
+    assert after["rows"] == before["rows"]

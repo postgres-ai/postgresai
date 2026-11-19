@@ -381,6 +381,7 @@ impl HttpCfg {
     /// threads 0 = max_concurrent.
     pub fn resolve(mut self) -> Self {
         if self.max_concurrent == 0 {
+            // On Linux this includes cgroup v2 cpu.max and affinity, not just host cores.
             let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
             self.max_concurrent = cores.clamp(1, 4);
         }

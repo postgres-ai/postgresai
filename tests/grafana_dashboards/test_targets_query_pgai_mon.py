@@ -82,6 +82,8 @@ def test_every_target_posts_one_select_to_pgai_mon(dashboard_path: Path) -> None
                     != ("POST", "raw", "text/plain", "" if csv else "rows"):
                 offenders.append(f"{where}: not a raw text/plain POST with the expected root")
             body = re.sub(r"'(?:[^']|'')*'", "''", opts.get("data") or "")  # string literals aside
+            body = re.sub(r"^-- pgai-window-v1 \$\{__from\} \$\{__to\} \$\{__interval_ms\} (?:range|instant)\n",
+                          "", body)
             if not re.match(r"\s*(WITH|SELECT)\b", body) or re.search(r";\s*\S", body):
                 offenders.append(f"{where}: the body is not one SELECT")
     assert not offenders, f"{dashboard_path.name}:\n  " + "\n  ".join(offenders)
