@@ -2,10 +2,13 @@
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadRange {
     pub start: i64,
     pub end: i64,
+    /// High 16 bits of the metric's series IDs. None means unknown dependencies.
+    #[serde(default)]
+    pub prefixes: Option<Vec<u16>>,
 }
 
 thread_local! {
@@ -16,16 +19,25 @@ pub fn reset() {
     RANGE.with(|r| *r.borrow_mut() = None);
 }
 
-pub fn record(start: i64, end: i64) {
+pub fn record(metrics: &[&str], start: i64, end: i64) {
     RANGE.with(|r| {
         let mut r = r.borrow_mut();
-        *r = Some(match *r {
-            Some(old) => ReadRange {
-                start: old.start.min(start),
-                end: old.end.max(end),
-            },
-            None => ReadRange { start, end },
+        let r = r.get_or_insert_with(|| ReadRange {
+            start,
+            end,
+            prefixes: Some(Vec::new()),
         });
+        r.start = r.start.min(start);
+        r.end = r.end.max(end);
+        if let Some(prefixes) = &mut r.prefixes {
+            prefixes.extend(
+                metrics
+                    .iter()
+                    .map(|m| (xxhash_rust::xxh3::xxh3_64(m.as_bytes()) >> 48) as u16),
+            );
+            prefixes.sort_unstable();
+            prefixes.dedup();
+        }
     });
 }
 

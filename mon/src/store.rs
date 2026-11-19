@@ -669,15 +669,18 @@ impl StoreCore {
             }
             app.flush()?;
         }
-        let mut days: BTreeMap<i64, (u64, i64, i64)> = BTreeMap::new();
+        let mut days: BTreeMap<i64, (u64, i64, i64, BTreeSet<u16>)> = BTreeMap::new();
         for s in rows {
-            let e = days.entry(day_of(s.ts)).or_insert((0, i64::MAX, i64::MIN));
+            let e = days
+                .entry(day_of(s.ts))
+                .or_insert_with(|| (0, i64::MAX, i64::MIN, BTreeSet::new()));
             e.0 += 1;
             e.1 = e.1.min(s.ts);
             e.2 = e.2.max(s.ts);
+            e.3.insert((s.series_id >> 48) as u16);
         }
         let mut out = Vec::new();
-        for (day, (n, mn, mx)) in days {
+        for (day, (n, mn, mx, prefixes)) in days {
             let id = alloc();
             let (rel, abs) = self.out_path("samples", day, 0, id);
             let sel = format!(
@@ -699,6 +702,7 @@ impl StoreCore {
                 created_ms: now_ms(),
                 registered: false,
                 ver: 0,
+                series_prefixes: Some(prefixes.into_iter().collect()),
             });
         }
         self.db.execute_batch("DROP TABLE buf_samples")?;
@@ -753,16 +757,21 @@ impl StoreCore {
             }
             app.flush()?;
         }
-        let mut days: BTreeMap<i64, (u64, i64, i64)> = BTreeMap::new();
+        let mut days: BTreeMap<i64, (u64, i64, i64, BTreeSet<u16>)> = BTreeMap::new();
         for r in rows {
             let ts = r.ts();
-            let e = days.entry(day_of(ts)).or_insert((0, i64::MAX, i64::MIN));
+            let e = days
+                .entry(day_of(ts))
+                .or_insert_with(|| (0, i64::MAX, i64::MIN, BTreeSet::new()));
             e.0 += 1;
             e.1 = e.1.min(ts);
             e.2 = e.2.max(ts);
+            if let Some(prefix) = r.series_prefix() {
+                e.3.insert(prefix);
+            }
         }
         let mut out = Vec::new();
-        for (day, (n, mn, mx)) in days {
+        for (day, (n, mn, mx, prefixes)) in days {
             let id = alloc();
             let (rel, abs) = self.out_path(kind, day, 0, id);
             let sel = format!(
@@ -787,6 +796,7 @@ impl StoreCore {
                 created_ms: now_ms(),
                 registered: false,
                 ver: 0,
+                series_prefixes: (kind == "series").then(|| prefixes.into_iter().collect()),
             });
         }
         self.db.execute_batch(&format!("DROP TABLE {tbl}"))?;
@@ -904,6 +914,9 @@ fn remove_orphans(root: &Path, cat: &Catalog) -> anyhow::Result<()> {
 
 /// Row types that the flush path can append to a DuckDB buffer table.
 pub trait Appendable {
+    fn series_prefix(&self) -> Option<u16> {
+        None
+    }
     fn buf_ddl() -> &'static str;
     /// SELECT list from the buffer table to the physical file.
     fn projection() -> &'static str;
@@ -917,6 +930,9 @@ pub trait Appendable {
 }
 
 impl Appendable for SeriesDef {
+    fn series_prefix(&self) -> Option<u16> {
+        Some((self.series_id >> 48) as u16)
+    }
     fn approx_bytes(&self) -> usize {
         64 + self.metric.len() + self.labels.iter().map(|(k, v)| k.len() + v.len() + 8).sum::<usize>()
     }
@@ -1405,6 +1421,7 @@ impl Compactor {
                     created_ms: now_ms(),
                     registered: job.kind == "series" && job.inputs.iter().all(|f| f.registered),
                     ver: 0,
+                    series_prefixes: None,
                 },
             ));
         }
@@ -1437,6 +1454,7 @@ impl Compactor {
                 created_ms: now_ms(),
                 registered: false,
                 ver: crate::eval::rollup::VER,
+                series_prefixes: None,
             })
         } else {
             None
@@ -1589,6 +1607,7 @@ impl Compactor {
                     created_ms: now_ms(),
                     registered: false,
                     ver: 0,
+                    series_prefixes: None,
                 })
             };
             let mut cat = self.shared.catalog.lock().unwrap();
@@ -1685,6 +1704,7 @@ impl Compactor {
                 created_ms: now_ms(),
                 registered: false,
                 ver: 0,
+                series_prefixes: None,
             });
             cat.save(&self.shared.root)?;
             self.shared.generation.store(cat.generation, Ordering::Release);

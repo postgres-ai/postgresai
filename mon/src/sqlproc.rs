@@ -251,7 +251,7 @@ pub fn child_main(spec_path: &Path) -> anyhow::Result<()> {
                     gen = r.gen;
                     cacheable = r.cacheable;
                     dict_version = r.dict_version;
-                    range = r.range;
+                    range = r.range.clone();
                     Box::new(r) as Box<dyn erased::Ser>
                 }),
             };
@@ -274,7 +274,12 @@ pub fn child_main(spec_path: &Path) -> anyhow::Result<()> {
                     None => String::new(),
                 };
                 let range = range.map_or(String::new(), |r: crate::readset::ReadRange| {
-                    format!(",\"r\":[{},{}]", r.start, r.end)
+                    format!(
+                        ",\"r\":[{},{}],\"rp\":{}",
+                        r.start,
+                        r.end,
+                        serde_json::to_string(&r.prefixes).unwrap()
+                    )
                 });
                 let _ = match res {
                     Ok(v) => write!(
@@ -442,8 +447,15 @@ pub fn parse_reply_s3(mut line: String) -> Option<(u64, Option<[u64; 4]>, Result
         range = Some(crate::readset::ReadRange {
             start: a.parse().ok()?,
             end: b.parse().ok()?,
+            prefixes: None,
         });
         after = &c[end + 1..];
+    }
+    if let Some(c) = after.strip_prefix(",\"rp\":") {
+        let mut values = serde_json::Deserializer::from_str(c).into_iter::<Option<Vec<u16>>>();
+        let prefixes = values.next()?.ok()?;
+        range.as_mut()?.prefixes = prefixes;
+        after = &c[values.byte_offset()..];
     }
     if let Some(c) = after.strip_prefix(",\"rc\":") {
         let (v, n) = num(c)?;

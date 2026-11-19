@@ -3,7 +3,7 @@
 //! Grafana window parameters are expanded by the HTTP handler before keying and execution.
 //! Whole response bodies, keyed by the SQL text (trimmed, trailing `;` removed) plus the
 //! response format, dictionary version and a hash of the views/macros/evaluator version.
-//! Bounded evaluator results survive catalog changes proven outside their fetch window.
+//! Bounded evaluator results survive additions proven unrelated to their metrics or fetch window.
 //! Identical requests that arrive while one runs wait for it (coalescing) instead of running again. A hit never reaches admission or the reader child.
 //!
 //! - Exact: a hit returns bytes from a run whose dependencies still hold. Only `elapsed_ms` in
@@ -50,6 +50,18 @@ struct Entry {
     dict_version: u64,
 }
 
+impl Entry {
+    fn charge(&self) -> usize {
+        self.zbody.len()
+            + ENTRY_OVERHEAD
+            + self
+                .range
+                .as_ref()
+                .and_then(|r| r.prefixes.as_ref())
+                .map_or(0, |p| p.capacity() * std::mem::size_of::<u16>())
+    }
+}
+
 type Res = Result<Arc<Reply>, QueryError>;
 
 struct Flight {
@@ -91,7 +103,7 @@ impl From<u64> for Snapshot {
     }
 }
 
-fn reads(f: &crate::catalog::FileEntry, r: crate::readset::ReadRange) -> bool {
+fn reads(f: &crate::catalog::FileEntry, r: &crate::readset::ReadRange) -> bool {
     match f.kind.as_str() {
         "series" => f.day >= crate::model::day_of(r.start) && f.day <= crate::model::day_of(r.end),
         crate::store::SERIES_MONTH => {
@@ -102,6 +114,17 @@ fn reads(f: &crate::catalog::FileEntry, r: crate::readset::ReadRange) -> bool {
         "samples" | crate::eval::rollup::KIND | crate::eval::rollup::KIND_1D | crate::eval::rollup::KIND_1HM => {
             f.min_ts <= r.end && f.max_ts >= r.start
         }
+        _ => false,
+    }
+}
+
+/// Prefix collisions invalidate conservatively; unknown file or query coverage does too.
+fn unrelated(f: &crate::catalog::FileEntry, r: &crate::readset::ReadRange) -> bool {
+    if !matches!(f.kind.as_str(), "samples" | "series") {
+        return false;
+    }
+    match (&f.series_prefixes, &r.prefixes) {
+        (Some(file), Some(query)) => !file.iter().any(|p| query.binary_search(p).is_ok()),
         _ => false,
     }
 }
@@ -333,20 +356,21 @@ impl QueryCache {
                             .iter()
                             .filter_map(|(k, slot)| {
                                 let Slot::Ready(e, _) = slot else { return None };
-                                let r = e.range?;
+                                let r = e.range.as_ref()?;
                                 (known
                                     && k.dict == snapshot.dict_version
                                     && added.iter().all(|f| {
-                                        !matches!(
-                                            f.kind.as_str(),
-                                            crate::eval::rollup::KIND
-                                                | crate::eval::rollup::KIND_1D
-                                                | crate::eval::rollup::KIND_1HM
-                                        ) && f.min_ts > r.end
-                                            && (!matches!(
+                                        unrelated(f, r)
+                                            || (!matches!(
                                                 f.kind.as_str(),
-                                                "series" | crate::store::SERIES_MONTH | crate::registry::KIND
-                                            ) || !reads(f, r))
+                                                crate::eval::rollup::KIND
+                                                    | crate::eval::rollup::KIND_1D
+                                                    | crate::eval::rollup::KIND_1HM
+                                            ) && f.min_ts > r.end
+                                                && (!matches!(
+                                                    f.kind.as_str(),
+                                                    "series" | crate::store::SERIES_MONTH | crate::registry::KIND
+                                                ) || !reads(f, r)))
                                     })
                                     && removed.iter().all(|f| {
                                         !matches!(
@@ -370,7 +394,7 @@ impl QueryCache {
                         st.clear();
                         for (k, slot) in kept {
                             if let Slot::Ready(e, t) = &slot {
-                                st.bytes += e.zbody.len() + ENTRY_OVERHEAD;
+                                st.bytes += e.charge();
                                 st.lru.insert(*t, k);
                             }
                             st.map.insert(k, slot);
@@ -461,7 +485,7 @@ impl QueryCache {
                 tokio::task::spawn_blocking(move || {
                     zstd::bulk::compress(r.body.as_bytes(), 1)
                         .ok()
-                        .map(|z| (z, r.body.len(), r.gen, r.range, r.dict_version))
+                        .map(|z| (z, r.body.len(), r.gen, r.range.clone(), r.dict_version))
                 })
                 .await
                 .ok()
@@ -491,7 +515,7 @@ impl QueryCache {
                     dict_version,
                     zbody: z.into_boxed_slice(),
                 });
-                st.bytes += e.zbody.len() + ENTRY_OVERHEAD;
+                st.bytes += e.charge();
                 st.map.insert(key, Slot::Ready(e, t));
                 st.lru.insert(t, key);
                 self.stats.stores.fetch_add(1, Ordering::Relaxed);
@@ -500,7 +524,7 @@ impl QueryCache {
                         break;
                     };
                     if let Some(Slot::Ready(e, _)) = st.map.remove(&k) {
-                        st.bytes -= e.zbody.len() + ENTRY_OVERHEAD;
+                        st.bytes -= e.charge();
                         self.stats.evictions.fetch_add(1, Ordering::Relaxed);
                     }
                 }
@@ -564,7 +588,7 @@ fn decompress_now(e: &Entry) -> Res {
                 body,
                 gen: e.gen,
                 cacheable: true,
-                range: e.range,
+                range: e.range.clone(),
                 dict_version: e.dict_version,
             })
         })
@@ -583,6 +607,68 @@ pub fn normalize(sql: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn prefix_overlap_and_unknown_metadata_invalidate() {
+        for (file_prefixes, query_prefixes, want) in [
+            (Some(vec![2]), Some(vec![1]), Served::Hit),
+            (Some(vec![1, 2]), Some(vec![1]), Served::Miss),
+            (None, Some(vec![1]), Served::Miss),
+            (Some(vec![2]), None, Served::Miss),
+        ] {
+            let c = Arc::new(QueryCache::new(1 << 20, 1 << 20, ""));
+            let snapshot = Snapshot {
+                gen: 1,
+                files: Some(Arc::new(vec![])),
+                ..Default::default()
+            };
+            let range = crate::readset::ReadRange {
+                start: 0,
+                end: 100,
+                prefixes: query_prefixes,
+            };
+            let r = Reply {
+                body: "original".into(),
+                gen: 1,
+                cacheable: true,
+                range: Some(range),
+                dict_version: 0,
+            };
+            c.get_or_run("query", 0, snapshot.clone(), move || {
+                let r = r.clone();
+                async move { Ok(r) }
+            })
+            .await
+            .0
+            .unwrap();
+            // Missing metadata is also how catalogs from before this field deserialize.
+            let mut file: crate::catalog::FileEntry = serde_json::from_value(serde_json::json!({
+                "kind": "samples", "path": "samples/new.parquet", "day": 0, "level": 0,
+                "rows": 1, "bytes": 1, "min_ts": 50, "max_ts": 50, "created_ms": 100,
+            }))
+            .unwrap();
+            assert!(file.series_prefixes.is_none());
+            file.series_prefixes = file_prefixes;
+            let snapshot = Snapshot {
+                gen: 2,
+                files: Some(Arc::new(vec![file])),
+                ..snapshot
+            };
+            let (r, how) = c
+                .get_or_run("query", 0, snapshot, || async {
+                    Ok(Reply {
+                        body: "rerun".into(),
+                        gen: 2,
+                        cacheable: true,
+                        range: None,
+                        dict_version: 0,
+                    })
+                })
+                .await;
+            assert_eq!(how, want);
+            assert_eq!(r.unwrap().body, if want == Served::Hit { "original" } else { "rerun" });
+        }
+    }
 
     #[test]
     fn normalize_only_trims() {

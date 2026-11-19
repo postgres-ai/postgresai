@@ -690,6 +690,7 @@ mod tests {
                         created_ms: 0,
                         registered: false,
                         ver: 0,
+                        series_prefixes: None,
                     };
                     for ids in [vec![7, u64::MAX], vec![], vec![5]] {
                         for (t0, t1, skip) in [(0, 5000, Some((1000, 3000))), (-2000, 8000, None), (9000, 10000, None)]
@@ -762,6 +763,7 @@ mod tests {
             created_ms: 0,
             registered: false,
             ver: 0,
+            series_prefixes: None,
         };
         let mut scan = Scan::open_skip(dir.path(), &[file], vec![0], 1000, 5000, Some((2000, 4000))).unwrap();
         let mut rows = SeriesRows::default();
@@ -807,6 +809,7 @@ mod tests {
             created_ms: 0,
             registered: false,
             ver: 0,
+            series_prefixes: None,
         };
         let mut scan = Scan::open(Path::new(root), &[file], vec![2], 1000, 3000).unwrap();
         let mut rows = SeriesRows::default();

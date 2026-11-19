@@ -320,7 +320,7 @@ ancestor quota or CPU affinity limits it further.
 | `max_concurrent` | 0 | Query slots. 0: one per core, at most 4. |
 | `queue_max` | 64 | Queries that may wait for a slot. |
 | `queue_wait_ms` | 30,000 | Longest wait for a slot; then `busy`. |
-| `short_query_ms` | 50 | A query expected to finish under this is short and may use the reserved slot. |
+| `short_query_ms` | 50 | A query expected to finish under this is short. It gets queue priority with one or two slots, or a reserved slot with three or more. |
 | `heavy_mem_gate_pct` | 50 | A heavy query starts beside another only while the reader's RSS is under this share of the cap. 0: off. |
 | `memory_limit` | `96MB` | DuckDB memory limit of the reader. |
 | `threads` | 1 | DuckDB threads of the reader. 0: `max_concurrent`. |
@@ -421,15 +421,16 @@ encoding and sample-file opening times. Scan times are part of execution/fetch, 
 elapsed time. Measure HTTP time separately: cached bodies retain the original `elapsed_ms`.
 
 Identical evaluator queries over fixed historical ranges can stay in the result cache across
-flushes that add only newer samples. Overlapping data, compaction, retention, and changes to
-the query dictionary invalidate affected entries. Series, registry and rollup changes are
-handled conservatively. Raw SQL and queries with unproven dependencies remain valid for one
-catalog generation. Compiled Grafana targets send raw times in a leading `pgai-window-v1`
+flushes of unrelated metrics or flushes that add only newer samples. Metric hash prefixes in
+flush-file metadata prove unrelated data safe; collisions or missing metadata stay conservative.
+Related overlapping data, compaction, retention, and changes to the query dictionary invalidate
+affected entries. Registry and rollup changes are handled conservatively. Raw SQL and queries
+with unproven dependencies remain valid for one catalog generation. Compiled Grafana targets send raw times in a leading `pgai-window-v1`
 header. The parent expands their numeric window parameters before keying and running the SQL.
 Reloads with the same aligned window and other parameters share a cache entry. Raw table bounds,
 instant alignment, and separately rounded range durations keep their own values in the key.
-A flush inside the full fetch window, including a subquery's last bucket after the aligned end,
-invalidates the entry; only flushes beyond that window can preserve a hit.
+A related flush inside the full fetch window, including a subquery's last bucket after the
+aligned end, invalidates the entry. Unrelated self-monitoring flushes can preserve a hit.
 
 ### Retention
 

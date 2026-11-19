@@ -2,11 +2,10 @@
 //!
 //! - `slots` queries run at once (default one per core, at most 4: `HttpCfg::resolve`).
 //! - **Short queries bypass heavy ones.** A query is short when its expected service time
-//!   (`Cost`) is under `short_ms`. One slot is kept for short queries, so heavy ones run on at
-//!   most `slots - 1`, and a trivial panel never waits behind a 14-day scan.
+//!   (`Cost`) is under `short_ms`. With at least three slots, one is kept for short queries.
+//!   Smaller hosts let heavy queries use every slot; waiting short queries get the next slot.
 //! - **Order among waiters** is arrival time plus expected service time: shortest first, with
-//!   ageing, so heavy queries are never starved (a heavy query's key is fixed when it arrives;
-//!   a short query that arrives later than that key has passed sorts after it).
+//!   ageing. On one/two-slot hosts, short-query priority overrides this order across classes.
 //! - **Memory gate.** A heavy query starts only while the reader's RSS is under `mem_gate`
 //!   bytes, or when no other heavy query runs. All slots share one reader process and one
 //!   RSS cap (sqlproc.rs), so this keeps a second and third heavy query from starting on top of
@@ -104,13 +103,12 @@ impl Admission {
         })
     }
 
-    /// Heavy queries may use every slot but one (the short lane), and all of them when there
-    /// is only one.
+    /// Keep a short lane only when it leaves at least two heavy slots.
     fn heavy_slots(&self) -> usize {
-        if self.slots > 1 {
+        if self.slots >= 3 {
             self.slots - 1
         } else {
-            1
+            self.slots
         }
     }
 
@@ -271,10 +269,16 @@ impl Admission {
             let mem_ok = st.running_heavy == 0
                 || self.mem_gate == 0
                 || self.mem.as_ref().and_then(|m| m()).is_none_or(|r| r < self.mem_gate);
-            let pick = st
-                .waiters
-                .iter()
-                .position(|w| !w.heavy || if w.big { big_ok } else { heavy_ok && mem_ok });
+            // Without a reserved lane, a queued short query gets the next free slot,
+            // even when a heavy waiter has aged ahead of it.
+            let short_first = (self.slots < 3)
+                .then(|| st.waiters.iter().position(|w| !w.heavy))
+                .flatten();
+            let pick = short_first.or_else(|| {
+                st.waiters
+                    .iter()
+                    .position(|w| !w.heavy || if w.big { big_ok } else { heavy_ok && mem_ok })
+            });
             let Some(i) = pick else {
                 if heavy_ok && !mem_ok && !st.waiters.is_empty() {
                     st.mem_deferred += 1;
@@ -389,11 +393,11 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn short_queries_bypass_heavy_ones() {
+    async fn two_heavy_queries_run_and_waiting_short_gets_next_slot() {
         let a = Admission::new(2, 50.0, 0, None);
         let heavy = Cost {
             key: 1,
-            expected_ms: 5000.0,
+            expected_ms: 1000.0,
             heavy: true,
             big: false,
         };
@@ -403,20 +407,54 @@ mod tests {
             heavy: false,
             big: false,
         };
-        let w = std::time::Duration::from_millis(50);
-        let h1 = a.acquire(&heavy, false, w).await.expect("first heavy runs");
-        // the second heavy query waits: one slot is kept for short queries
-        assert!(a.acquire(&heavy, false, w).await.is_none());
-        let s1 = a
-            .acquire(&short, false, w)
-            .await
-            .expect("short runs beside the heavy one");
-        drop(s1);
+        let w = std::time::Duration::from_secs(30);
+        let h1 = a.acquire(&heavy, false, w).await.unwrap();
+        let h2 = a.acquire(&heavy, false, w);
+        tokio::pin!(h2);
+        let std::task::Poll::Ready(Some(h2)) = futures_util::poll!(&mut h2) else {
+            panic!("both heavy queries must run without waiting");
+        };
+        assert_eq!(a.stats()["running_heavy"], 2);
+        let h3 = a.acquire(&heavy, false, w);
+        let h4 = a.acquire(&heavy, false, w);
+        tokio::pin!(h3, h4);
+        assert!(futures_util::poll!(&mut h3).is_pending());
+        assert!(futures_util::poll!(&mut h4).is_pending());
+        // Even aged heavy waiters cannot take the next slot from a waiting short query.
+        for waiter in &mut a.st.lock().unwrap().waiters {
+            waiter.prio = -1.0;
+        }
+        let s1 = a.acquire(&short, false, w);
+        tokio::pin!(s1);
+        assert!(futures_util::poll!(&mut s1).is_pending());
         drop(h1);
-        let _h2 = a
-            .acquire(&heavy, false, w)
-            .await
-            .expect("heavy runs once the first ended");
+        let std::task::Poll::Ready(Some(s1)) = futures_util::poll!(&mut s1) else {
+            panic!("short query must get the next free slot");
+        };
+        assert!(futures_util::poll!(&mut h3).is_pending());
+        assert!(futures_util::poll!(&mut h4).is_pending());
+        drop(s1);
+        let h3 = h3.await.unwrap();
+        assert!(futures_util::poll!(&mut h4).is_pending());
+        drop(h2);
+        let _h4 = h4.await.unwrap();
+        drop(h3);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn larger_hosts_keep_a_short_slot() {
+        let a = Admission::new(3, 50.0, 0, None);
+        let heavy = a.cost("SELECT * FROM samples");
+        let short = a.cost("SELECT 1");
+        let w = std::time::Duration::from_secs(30);
+        let _h1 = a.acquire(&heavy, false, w).await.unwrap();
+        let _h2 = a.acquire(&heavy, false, w).await.unwrap();
+        let h3 = a.acquire(&heavy, false, w);
+        tokio::pin!(h3);
+        assert!(futures_util::poll!(&mut h3).is_pending());
+        let s = a.acquire(&short, false, w);
+        tokio::pin!(s);
+        assert!(futures_util::poll!(&mut s).is_ready());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -424,7 +462,7 @@ mod tests {
         let rss = Arc::new(std::sync::atomic::AtomicU64::new(150 << 20));
         let r = rss.clone();
         let probe: MemProbe = Arc::new(move || Some(r.load(std::sync::atomic::Ordering::Relaxed)));
-        let a = Admission::new(4, 50.0, 100 << 20, Some(probe));
+        let a = Admission::new(2, 50.0, 100 << 20, Some(probe));
         let heavy = Cost {
             key: 1,
             expected_ms: 5000.0,

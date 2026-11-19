@@ -24,6 +24,9 @@ pub struct FileEntry {
     /// rollup files: format version (2 = also the second-to-last sample per bucket, irate)
     #[serde(default, skip_serializing_if = "is_zero")]
     pub ver: u8,
+    /// Sorted high 16 bits of series IDs in a flush file. Missing on older/merged files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_prefixes: Option<Vec<u16>>,
 }
 
 fn is_zero(x: &u8) -> bool {

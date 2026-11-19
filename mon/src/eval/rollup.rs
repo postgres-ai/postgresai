@@ -2042,6 +2042,7 @@ pub fn update_tier(
             created_ms: crate::model::now_ms(),
             registered: false,
             ver: VER,
+            series_prefixes: None,
         });
         cat.save(&shared.root)?;
         shared.generation.store(cat.generation, Ordering::Release);

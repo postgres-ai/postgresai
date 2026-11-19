@@ -138,11 +138,14 @@ client ─► POST /sql ─► auth ─► result cache ─► admission ─► 
 1. **Auth** (`auth.rs`). Every route except `GET /livez` needs credentials.
 2. **Result cache** (`qcache.rs`). Key: expanded SQL text, response format, views hash and dictionary
    version. Evaluator-only queries record the union of their bound fetch windows, including
-   lookback. Their replies survive a flush when every added file starts after that window's
-   end and no evaluator file was removed or replaced. Series files are selected by day or
-   month: additions in those windows invalidate too. Registry and rollup changes invalidate
-   conservatively. The parent compares file snapshots once per catalog generation; entries
-   need only a time range, not their own file lists.
+   lookback, and metric hash prefixes (the high 16 bits of series IDs). Sample and series
+   flush files record their prefixes in the catalog. A disjoint prefix set proves an added
+   file unrelated, even when its samples overlap the window. Hash collisions and missing
+   metadata remain conservative. Otherwise, added samples must start after the fetch end;
+   series additions must also fall outside the selected days or months. Evaluator file
+   removal or replacement still invalidates, as do registry and rollup changes. The parent
+   compares file snapshots once per catalog generation; entries store no file lists and
+   their dependency metadata counts toward the cache byte limit.
    Ordinary SQL, mixed evaluator/table queries and unproven macros keep generation-only
    validity. Macro bodies and every overload must pass the dependency check. Errors and
    volatile queries are not stored. Identical requests in flight share one execution.
@@ -152,12 +155,19 @@ client ─► POST /sql ─► auth ─► result cache ─► admission ─► 
    alone. Equal aligned windows share a key; raw table bounds and independent raw expressions
    remain exact. Instant targets align to the interval and keep their five-minute evaluator step;
    range duration rounds separately to whole seconds. Invalid headers return `invalid_input`.
-   Fetch windows can extend past the aligned end for subqueries: a flush in that last bucket
+   Fetch windows can extend past the aligned end for subqueries: a related flush in that last bucket
    invalidates the entry. A hit retains the original body's `elapsed_ms`.
 3. **Admission** (`admission.rs`). `http.max_concurrent` queries run at once (default: one per
    core, at most 4). Rust `available_parallelism()` honors Linux cgroup v2 quotas and affinity.
-   Compose gives pgai-mon 2.0 CPUs, normally two slots; tighter ancestor limits still apply. One slot is kept for short queries. Up to `http.queue_max` (64) wait for
-   at most `http.queue_wait_ms` (30 s); beyond that the answer is `busy`, HTTP 429.
+   Compose gives pgai-mon 2.0 CPUs, normally two slots; tighter ancestor limits still apply.
+   With one or two slots, heavy queries may use every slot. Waiting short queries get the
+   next free slot before waiting heavy queries, even aged ones; they do not preempt running
+   queries. This uses both CPUs for panels while keeping short queries out of the heavy queue.
+   A continuous short-query load can defer heavy waiters on these small hosts. With three or
+   more slots, one remains reserved for short queries and arrival-plus-cost ageing applies.
+   The heavy-query RSS gate, big-shape isolation and exclusive retry rules still apply.
+   Up to `http.queue_max` (64) wait for at most `http.queue_wait_ms` (30 s); beyond that the
+   answer is `busy`, HTTP 429.
 4. **Read-only check** (`Reader::check_read_only` in `query.rs`). DuckDB's own parser
    serialises the statement; anything but exactly one SELECT is refused, and so is a table
    function outside the allowlist.

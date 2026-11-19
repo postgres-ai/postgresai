@@ -351,7 +351,7 @@ pub struct HttpCfg {
     /// a fresh reader instead of inheriting a near-cap one and being killed for someone else.
     pub reader_drain_pct: u64,
     /// Admission (admission.rs): a query expected to finish under this many ms is short and
-    /// may use the slot kept for short queries.
+    /// gets queue priority on one/two-slot hosts, or a reserved slot on larger hosts.
     pub short_query_ms: u64,
     /// A heavy query starts only while the reader's RSS is under this % of reader_rss_cap_mb
     /// (or when no other heavy query runs). 0 = no gate.

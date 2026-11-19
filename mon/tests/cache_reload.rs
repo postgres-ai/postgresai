@@ -252,7 +252,12 @@ fn child_reloads_dictionary_and_returns_fetch_metadata() {
     assert_eq!(new.dict_version, updated.version);
     assert_ne!(old.dict_version, new.dict_version);
     assert_eq!(old.gen, new.gen);
-    assert!(new.range.unwrap().start <= END - 1_800_000);
+    let range = new.range.unwrap();
+    assert!(range.start <= END - 1_800_000);
+    assert_eq!(
+        range.prefixes,
+        Some(vec![(series_id("pgwatch_slow_v", &[]) >> 48) as u16])
+    );
     drop(input);
     assert!(child.0.wait().unwrap().success());
 }
@@ -431,4 +436,117 @@ async fn http_grafana_windows_share_only_exact_results() {
         .unwrap();
     assert_eq!(response.status(), 400);
     server.abort();
+}
+
+/// Repeat the same aligned requests with real self-monitoring flushes inside their window.
+#[tokio::test]
+async fn unrelated_self_scrape_flushes_keep_identical_results() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = StoreCore::open(dir.path(), &StoreCfg::default()).unwrap();
+    seed(&mut core);
+    let b = Backend::InProc(Arc::new(
+        Reader::new(
+            core.shared.clone(),
+            HttpCfg::default(),
+            EMBEDDED_VIEWS_SQL.into(),
+            dict(3600).entries,
+        )
+        .unwrap(),
+    ));
+    let c = cache();
+    let queries: Vec<_> = (0..3).map(|i| query(END - i * 30_000)).collect();
+    let mut bodies = Vec::new();
+    for sql in &queries {
+        bodies.push(check(&c, &b, &core, sql, Served::Miss).await);
+    }
+    let mut hits = 0;
+    for i in 0..10 {
+        let ts = END - 600_000 + i * 30_000;
+        let samples = pgai_mon::selfmon::samples(
+            &serde_json::json!({
+                "admission": {"running": 0, "waiting": 0, "started_short": 0, "started_heavy": i},
+            }),
+            ts,
+        );
+        assert!(!samples.is_empty());
+        core.append(Record::Series(
+            samples
+                .iter()
+                .map(|s| SeriesDef {
+                    series_id: series_id(&s.metric, &s.labels),
+                    metric: s.metric.clone(),
+                    labels: s.labels.clone(),
+                    first_seen: ts,
+                })
+                .collect(),
+        ))
+        .unwrap();
+        core.append(Record::Samples(
+            samples
+                .iter()
+                .map(|s| Sample {
+                    series_id: series_id(&s.metric, &s.labels),
+                    ts: s.ts,
+                    value: s.value,
+                })
+                .collect(),
+        ))
+        .unwrap();
+        core.flush().unwrap();
+        for (sql, body) in queries.iter().zip(&bodies) {
+            let (r, how) = cached(&c, &b, &core, sql, false).await;
+            hits += usize::from(how == Served::Hit);
+            assert_eq!(&r.body, body);
+            assert_eq!(r.body, b.call("sql_csv", sql.clone()).await.unwrap().body);
+        }
+    }
+    println!("identical aligned requests with 10 in-window self-scrape flushes: {hits}/30 hits; cached and fresh CSV bytes equal");
+    assert_eq!(hits, 30);
+    append(&mut core, END, 99.0);
+    assert!(check(&c, &b, &core, &queries[0], Served::Miss).await.contains("99.0"));
+}
+
+#[tokio::test]
+async fn dependencies_include_every_metric_even_when_no_series_match() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = StoreCore::open(dir.path(), &StoreCfg::default()).unwrap();
+    seed(&mut core);
+    let b = Backend::InProc(Arc::new(
+        Reader::new(
+            core.shared.clone(),
+            HttpCfg::default(),
+            EMBEDDED_VIEWS_SQL.into(),
+            dict(3600).entries,
+        )
+        .unwrap(),
+    ));
+    let c = cache();
+    let missing = "pgwatch_other_v";
+    let sql = format!(
+        "{} UNION ALL SELECT value FROM prom_last('{missing}', [], {END}, {END}, 30000)",
+        query(END).replace(" ORDER BY value", "")
+    );
+    let old = check(&c, &b, &core, &sql, Served::Miss).await;
+    let range = b.call("sql_csv", sql.clone()).await.unwrap().range.unwrap();
+    let prefixes = range.prefixes.unwrap();
+    for metric in ["pgwatch_slow_v", missing] {
+        assert!(prefixes.contains(&((series_id(metric, &[]) >> 48) as u16)));
+    }
+    core.append(Record::Series(vec![SeriesDef {
+        series_id: series_id(missing, &[]),
+        metric: missing.into(),
+        labels: vec![],
+        first_seen: END,
+    }]))
+    .unwrap();
+    core.append(Record::Samples(vec![Sample {
+        series_id: series_id(missing, &[]),
+        ts: END,
+        value: 123.0,
+    }]))
+    .unwrap();
+    core.flush().unwrap();
+    let new = check(&c, &b, &core, &sql, Served::Miss).await;
+    assert_ne!(old, new);
+    assert!(new.contains("123.0"));
 }
