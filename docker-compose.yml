@@ -195,7 +195,10 @@ services:
   grafana:
     image: grafana/grafana:12.3.2
     scale: ${GRAFANA_SCALE:-1}
-    cpus: ${GRAFANA_CPUS:-0.5}
+    # The Infinity plugin parses every panel response: at 0.5 CPU Grafana, not pgai-mon, set the
+    # dashboard load time (2 vCPU box, dashboard 02 over 24 h: 8.6 s at 0.5, 2.5 s at 2.0). A cap,
+    # not a reservation.
+    cpus: ${GRAFANA_CPUS:-2.0}
     # Raise this together with pgai-mon http.chart_max_bytes (5 MiB) for larger charts.
     mem_limit: ${GRAFANA_MEM:-805306368}
     environment:
