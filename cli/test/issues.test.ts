@@ -1,5 +1,5 @@
 import { describe, test, expect, mock, beforeEach, afterEach } from "bun:test";
-import { createIssue, updateIssue, updateIssueComment, fetchIssues, fetchIssue, recordIssueView, cliViewVia, withVisibleHiddenFlag, issueRequestHeaders, presentIssue, issueStatusLabel, type SeenByEntry } from "../lib/issues";
+import { describeNotifyOutcome, createIssue, updateIssue, updateIssueComment, fetchIssues, fetchIssue, recordIssueView, cliViewVia, withVisibleHiddenFlag, issueRequestHeaders, presentIssue, issueStatusLabel, type SeenByEntry } from "../lib/issues";
 
 // Mock fetch globally
 const originalFetch = globalThis.fetch;
@@ -223,6 +223,90 @@ describe("updateIssue", () => {
     expect(bodies[1]).toEqual({ p_id: "test-id", p_is_hidden: false });
     // An update that does not mention it must not touch the flag.
     expect("p_is_hidden" in bodies[2]).toBe(false);
+  });
+
+  describe("notify on unhide (platform-all #837)", () => {
+    const base = { apiKey: "test-key", apiBaseUrl: "https://api.example.com", issueId: "test-id" };
+
+    /** Serves GET /issues with `row` (or an error) and records every request. */
+    function mockApi(row: Record<string, unknown> | null, getError?: { status: number; body: string }) {
+      const calls: Array<{ method: string; url: string; body: Record<string, unknown> | null }> = [];
+      globalThis.fetch = mock((url: string, options: RequestInit) => {
+        const method = options?.method ?? "GET";
+        calls.push({ method, url, body: options?.body ? JSON.parse(options.body as string) : null });
+        if (method === "GET") {
+          if (getError) return Promise.resolve(new Response(getError.body, { status: getError.status }));
+          return Promise.resolve(new Response(JSON.stringify(row ? [row] : []), { status: 200 }));
+        }
+        return Promise.resolve(new Response(JSON.stringify({ id: "test-id" }), { status: 200 }));
+      }) as unknown as typeof fetch;
+      return calls;
+    }
+
+    test("a never-visible hidden issue: sends p_notify and says it was requested", async () => {
+      const calls = mockApi({ id: "test-id", is_hidden: true, first_visible_at: null });
+      const result = await updateIssue({ ...base, hidden: false, notify: true });
+      expect(calls[0].method).toBe("GET");
+      expect(calls[0].url).toContain("select=id%2Cis_hidden%2Cfirst_visible_at");
+      expect(calls[1].body).toEqual({ p_id: "test-id", p_is_hidden: false, p_notify: true });
+      expect(result.notify).toEqual({ requested: true, reason: "first_publish" });
+    });
+
+    test("an issue visible before: unhides without p_notify and says why", async () => {
+      const calls = mockApi({ id: "test-id", is_hidden: true, first_visible_at: "2026-11-01T10:00:00+00:00" });
+      const result = await updateIssue({ ...base, hidden: false, notify: true });
+      expect(calls[1].body).toEqual({ p_id: "test-id", p_is_hidden: false });
+      expect(result.notify).toEqual({ requested: false, reason: "visible_before", first_visible_at: "2026-11-01T10:00:00+00:00" });
+      expect(describeNotifyOutcome(result.notify!)).toContain("visible before (2026-11-01T10:00:00+00:00)");
+    });
+
+    test("an issue already visible: nothing to publish, nothing requested", async () => {
+      const calls = mockApi({ id: "test-id", is_hidden: false, first_visible_at: "2026-11-01T10:00:00+00:00" });
+      const result = await updateIssue({ ...base, hidden: false, notify: true });
+      expect("p_notify" in (calls[1].body ?? {})).toBe(false);
+      expect(result.notify).toEqual({ requested: false, reason: "already_visible" });
+    });
+
+    test("a platform without first_visible_at: refused before any update", async () => {
+      const calls = mockApi(null, {
+        status: 400,
+        body: JSON.stringify({ code: "42703", message: "column issues.first_visible_at does not exist" }),
+      });
+      await expect(updateIssue({ ...base, hidden: false, notify: true })).rejects.toThrow("does not support notify on unhide");
+      expect(calls.filter((c) => c.method === "POST")).toHaveLength(0);
+    });
+
+    test("an issue the caller cannot see: not found, no update", async () => {
+      const calls = mockApi(null);
+      await expect(updateIssue({ ...base, hidden: false, notify: true })).rejects.toThrow("Issue not found: test-id");
+      expect(calls.filter((c) => c.method === "POST")).toHaveLength(0);
+    });
+
+    test("notify without unhiding is refused before any request", async () => {
+      const calls = mockApi({ id: "test-id", is_hidden: true, first_visible_at: null });
+      await expect(updateIssue({ ...base, title: "T", notify: true })).rejects.toThrow("only together with unhiding");
+      await expect(updateIssue({ ...base, hidden: true, notify: true })).rejects.toThrow("only together with unhiding");
+      expect(calls).toHaveLength(0);
+    });
+
+    test("each outcome reads exactly as the README quotes it", () => {
+      expect(describeNotifyOutcome({ requested: true, reason: "first_publish" })).toBe(
+        "Notifications requested: the new-issue email and Slack post go out now."
+      );
+      expect(describeNotifyOutcome({ requested: false, reason: "visible_before", first_visible_at: "2026-11-01T10:00:00+00:00" })).toBe(
+        "Nothing sent: this issue was visible before (2026-11-01T10:00:00+00:00); the email and Slack post go out only the first time."
+      );
+      expect(describeNotifyOutcome({ requested: false, reason: "already_visible" })).toBe(
+        "Nothing sent: the issue is already visible."
+      );
+    });
+
+    test("without notify an unhide reads nothing first and reports nothing", async () => {
+      const calls = mockApi({ id: "test-id", is_hidden: true, first_visible_at: null });
+      const result = await updateIssue({ ...base, hidden: false });
+      expect(calls.map((c) => c.method)).toEqual(["POST"]);
+      expect("notify" in result).toBe(false);
+    });
   });
 
   test("accepts update with only title", async () => {

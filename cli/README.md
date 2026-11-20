@@ -633,7 +633,7 @@ Tools exposed:
 - `list_issues`: returns the same JSON as `postgresai issues list` (args: `{ org_id, status?, hidden_only?, limit?, offset?, debug? }`). Unlike the CLI, omitting `status` returns open and closed issues; pass `status: "open"` to match the CLI default.
 - `view_issue`: view a single issue with its comments (args: `{ issue_id, org_id, debug? }`).
 - `create_issue`: create a new issue (args: `{ title, description?, org_id, project_id?, labels?, attachments?, is_hidden?, debug? }`).
-- `update_issue`: update title/description/status/labels/is_hidden (args: `{ issue_id, org_id, title?, description?, status?, labels?, attachments?, is_hidden?, debug? }`).
+- `update_issue`: update title/description/status/labels/is_hidden (args: `{ issue_id, org_id, title?, description?, status?, labels?, attachments?, is_hidden?, notify?, debug? }`). `notify: true` with `is_hidden: false` asks for the new-issue email and Slack post (see `--notify` below); a second text item says whether they were requested.
 - `post_issue_comment`: post a comment (args: `{ issue_id, org_id, content?, parent_comment_id?, attachments?, debug? }`).
 - `update_issue_comment`: update an existing comment (args: `{ comment_id, org_id, content?, attachments?, debug? }`).
 - `upload_file`: upload a local file and return the storage URL plus a ready-to-paste markdown link (args: `{ path, org_id, debug? }`).
@@ -690,6 +690,7 @@ postgresai issues create --org-id <id> <title>               # Create a new issu
 postgresai issues create --org-id <id> <title> --hidden      # Create a hidden issue (PostgresAI staff)
 postgresai issues update <issueId> [--title ... --status ...]# Update an existing issue
 postgresai issues update <issueId> --hidden|--no-hidden      # Hide / unhide an issue (PostgresAI staff)
+postgresai issues update <issueId> --no-hidden --notify      # Unhide and send the new-issue email + Slack post (first time only)
 postgresai issues post-comment <issueId> <content>           # Post a comment to an issue
 postgresai issues update-comment <commentId> <content>       # Update an existing comment
 postgresai issues files upload <path>                        # Upload a file, print URL + markdown
@@ -710,6 +711,20 @@ ones, filtered server-side. `issues create --hidden` creates one, and
 (MCP: `is_hidden` on `create_issue` / `update_issue`). The CLI does no staff
 check of its own: the platform refuses a visibility change for a non-staff
 credential with a plain error, and the CLI prints it and exits non-zero.
+
+Making a hidden issue visible is silent unless you add `--notify` (MCP:
+`notify: true`): then the organization gets the new-issue email and Slack post,
+as when staff pick "Make visible and notify" in the Console. The platform sends
+them only the first time an issue becomes visible, and a plain `--no-hidden`
+also uses up that one chance. So the CLI reads the issue first and says what
+happened, on stderr (`--json` output also carries `notify`):
+
+- `Notifications requested: the new-issue email and Slack post go out now.`
+- `Nothing sent: this issue was visible before (<time>); the email and Slack post go out only the first time.`
+- `Nothing sent: the issue is already visible.`
+
+`--notify` needs `--no-hidden`, and a platform without notify support refuses it
+with a message (nothing is unhidden).
 
 Staff access is granted per credential, not per person, and a credential that
 does not qualify simply sees nothing — `--hidden-only` returns an empty list

@@ -12,7 +12,7 @@ import { fileURLToPath } from "url";
 import * as crypto from "node:crypto";
 import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
-import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, recordIssueView, cliViewVia, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
+import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, recordIssueView, cliViewVia, createIssue, updateIssue, describeNotifyOutcome, checkNotifyPossible, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate, formatReportsForTerminal, type ReportKind } from "../lib/reports";
 import { boxWords, CancelledError, clickhouseKeyHeld, LOOKUP_MS, NOT_CONFIRMED, STILL_CREATING, STILL_IN_PROGRESS, STOPPED_LOOKING, caNote, connect, connectStatus, httpStatus, pickPlace, type DeployOptions, resultLines, stepProgress, stepViewEnd, listedDatabase, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, providerArg, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status, type SupabaseProject, supabaseProjectRows, terminalText, privateLinkOf, privateLinkFailure, overPrivateLink, stackTeardown, verifiedWords } from "../lib/connect";
 import {
@@ -7902,9 +7902,13 @@ withOrgOptions(issues.command("update <issueId>"))
   )
   .option("--hidden", "hide the issue (PostgresAI staff)")
   .option("--no-hidden", "unhide the issue (PostgresAI staff)")
+  .option(
+    "--notify",
+    "with --no-hidden: send the new-issue email and Slack post; only the first time the issue becomes visible (PostgresAI staff)"
+  )
   .option("--debug", "enable debug output")
   .option("--json", "output raw JSON")
-  .action(async (issueId: string, opts: { title?: string; description?: string; status?: string; label?: string[]; clearLabels?: boolean; attach?: string[]; hidden?: boolean; debug?: boolean; json?: boolean }) => {
+  .action(async (issueId: string, opts: { title?: string; description?: string; status?: string; label?: string[]; clearLabels?: boolean; attach?: string[]; hidden?: boolean; notify?: boolean; debug?: boolean; json?: boolean }) => {
     const rootOpts = program.opts<CliOptions>();
     const cfg = config.readConfig();
     const { apiKey } = getConfig(rootOpts);
@@ -7915,6 +7919,12 @@ withOrgOptions(issues.command("update <issueId>"))
     }
 
     const { apiBaseUrl, storageBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+
+    if (opts.notify && opts.hidden !== false) {
+      console.error("--notify works only with --no-hidden (it notifies when the issue becomes visible)");
+      process.exitCode = 1;
+      return;
+    }
 
     const title = opts.title !== undefined ? interpretEscapes(String(opts.title)) : undefined;
     let description = opts.description !== undefined ? interpretEscapes(String(opts.description)) : undefined;
@@ -7953,6 +7963,11 @@ withOrgOptions(issues.command("update <issueId>"))
       attachPaths.length > 0 ? "Uploading attachments..." : "Updating issue..."
     );
     try {
+      // A notify the platform would refuse is refused before any upload, so
+      // nothing is left behind.
+      if (opts.notify && attachPaths.length > 0) {
+        await checkNotifyPossible({ apiKey, apiBaseUrl, issueId, debug: !!opts.debug });
+      }
       if (attachPaths.length > 0) {
         // If the caller did not supply a new description, fetch the existing one
         // and append to it. This makes "add a screenshot to issue X" a one-step
@@ -7990,10 +8005,16 @@ withOrgOptions(issues.command("update <issueId>"))
         // Commander leaves this undefined unless --hidden/--no-hidden was given,
         // so an update that does not mention it never touches p_is_hidden.
         hidden: typeof opts.hidden === "boolean" ? opts.hidden : undefined,
+        notify: opts.notify === true,
         debug: !!opts.debug,
       });
       spinner.stop();
       printResult(result, opts.json);
+      // On stderr, so --json and piped stdout stay the raw result (which also
+      // carries `notify`).
+      if (result.notify) {
+        console.error(describeNotifyOutcome(result.notify));
+      }
     } catch (err) {
       spinner.stop();
       const message = err instanceof Error ? err.message : String(err);
