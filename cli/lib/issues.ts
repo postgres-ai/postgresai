@@ -672,7 +672,100 @@ export interface UpdateIssueParams {
   labels?: string[];
   /** Hide (true) or unhide (false) the issue; staff-only server-side (platform-all #562). */
   hidden?: boolean;
+  /**
+   * With hidden=false: ask for the new-issue email and Slack post. The platform
+   * sends them only on the update that makes an issue visible for the first
+   * time (platform-all #837), so the issue is read first and the outcome says
+   * whether they were requested.
+   */
+  notify?: boolean;
   debug?: boolean;
+}
+
+/**
+ * What an unhide with `notify` did. The platform's v1.issue_update returns
+ * nothing about it, so this is decided from the issue as read just before.
+ */
+export type NotifyOutcome =
+  | { requested: true; reason: "first_publish" }
+  | { requested: false; reason: "visible_before"; first_visible_at: string }
+  | { requested: false; reason: "already_visible" };
+
+/** One line for a person: what `notify` did. */
+export function describeNotifyOutcome(outcome: NotifyOutcome): string {
+  switch (outcome.reason) {
+    case "first_publish":
+      return "Notifications requested: the new-issue email and Slack post go out now.";
+    case "visible_before":
+      return `Nothing sent: this issue was visible before (${outcome.first_visible_at}); the email and Slack post go out only the first time.`;
+    case "already_visible":
+      return "Nothing sent: the issue is already visible.";
+  }
+}
+
+interface PublishState {
+  is_hidden: boolean;
+  first_visible_at: string | null;
+}
+
+/**
+ * Throws what an unhide with notify would refuse with (platform without notify
+ * support, issue not found) before anything else happens: callers run it
+ * before uploading attachments so a refusal leaves nothing behind.
+ */
+export async function checkNotifyPossible(params: {
+  apiKey: string;
+  apiBaseUrl: string;
+  orgScope?: OrgScope;
+  issueId: string;
+  debug?: boolean;
+}): Promise<void> {
+  const { apiKey, apiBaseUrl, orgScope, issueId, debug } = params;
+  await readPublishState(normalizeBaseUrl(apiBaseUrl), issueRequestHeaders(apiKey, orgScope), issueId, debug);
+}
+
+/**
+ * Read whether the issue is hidden and when it was first visible. A platform
+ * without first_visible_at (before platform-all #837) answers 400 for the
+ * unknown column: that is reported as "not supported", not as a raw error.
+ */
+async function readPublishState(
+  base: string,
+  headers: Record<string, string>,
+  issueId: string,
+  debug?: boolean
+): Promise<PublishState> {
+  const url = new URL(`${base}/issues`);
+  url.searchParams.set("select", "id,is_hidden,first_visible_at");
+  url.searchParams.set("id", `eq.${issueId}`);
+  url.searchParams.set("limit", "1");
+  if (debug) {
+    console.error(`Debug: GET URL: ${url.toString()}`);
+  }
+  const response = await fetch(url.toString(), { method: "GET", headers });
+  const data = await response.text();
+  if (debug) {
+    console.error(`Debug: Response status: ${response.status}`);
+  }
+  if (!response.ok) {
+    if (response.status === 400 && /first_visible_at/.test(data)) {
+      throw new Error(
+        "This PostgresAI platform does not support notify on unhide yet. Unhide without it, or retry after the platform update."
+      );
+    }
+    throw new Error(formatHttpError("Failed to read the issue", response.status, data));
+  }
+  let rows: unknown;
+  try {
+    rows = JSON.parse(data);
+  } catch {
+    throw new Error(`Failed to parse issue response: ${data}`);
+  }
+  const row = Array.isArray(rows) ? (rows[0] as Partial<PublishState> | undefined) : undefined;
+  if (!row) {
+    throw new Error(`Issue not found: ${issueId}`);
+  }
+  return { is_hidden: row.is_hidden === true, first_visible_at: row.first_visible_at ?? null };
 }
 
 export interface UpdatedIssue {
@@ -699,8 +792,8 @@ export interface UpdatedIssue {
  * @returns The updated issue object
  * @throws Error if API key or issueId is missing, if no fields to update are provided, or if the API call fails
  */
-export async function updateIssue(params: UpdateIssueParams): Promise<UpdatedIssue> {
-  const { apiKey, apiBaseUrl, orgScope, issueId, title, description, status, labels, hidden, debug } = params;
+export async function updateIssue(params: UpdateIssueParams): Promise<UpdatedIssue & { notify?: NotifyOutcome }> {
+  const { apiKey, apiBaseUrl, orgScope, issueId, title, description, status, labels, hidden, notify, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
@@ -709,6 +802,9 @@ export async function updateIssue(params: UpdateIssueParams): Promise<UpdatedIss
   }
   if (title === undefined && description === undefined && status === undefined && labels === undefined && hidden === undefined) {
     throw new Error("At least one field to update is required (title, description, status, labels, or hidden)");
+  }
+  if (notify && hidden !== false) {
+    throw new Error("notify works only together with unhiding the issue (hidden=false)");
   }
 
   const base = normalizeBaseUrl(apiBaseUrl);
@@ -733,9 +829,24 @@ export async function updateIssue(params: UpdateIssueParams): Promise<UpdatedIss
   if (hidden !== undefined) {
     bodyObj.p_is_hidden = hidden;
   }
-  const body = JSON.stringify(bodyObj);
 
   const headers: Record<string, string> = issueRequestHeaders(apiKey, orgScope);
+
+  // Only the first publish can notify; the server ignores p_notify otherwise
+  // and says nothing, so decide (and report) from the issue as it is now.
+  let notifyOutcome: NotifyOutcome | undefined;
+  if (notify) {
+    const state = await readPublishState(base, headers, issueId, debug);
+    if (!state.is_hidden) {
+      notifyOutcome = { requested: false, reason: "already_visible" };
+    } else if (state.first_visible_at) {
+      notifyOutcome = { requested: false, reason: "visible_before", first_visible_at: state.first_visible_at };
+    } else {
+      notifyOutcome = { requested: true, reason: "first_publish" };
+      bodyObj.p_notify = true;
+    }
+  }
+  const body = JSON.stringify(bodyObj);
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -760,11 +871,13 @@ export async function updateIssue(params: UpdateIssueParams): Promise<UpdatedIss
   const data = await response.text();
 
   if (response.ok) {
+    let updated: UpdatedIssue;
     try {
-      return JSON.parse(data) as UpdatedIssue;
+      updated = JSON.parse(data) as UpdatedIssue;
     } catch {
       throw new Error(`Failed to parse update issue response: ${data}`);
     }
+    return notifyOutcome ? { ...updated, notify: notifyOutcome } : updated;
   } else {
     throw new Error(formatHttpError("Failed to update issue", response.status, data));
   }

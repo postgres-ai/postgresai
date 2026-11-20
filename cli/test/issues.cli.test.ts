@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { resolve } from "path";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync } from "fs";
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 
 function runCli(args: string[], env: Record<string, string> = {}) {
@@ -46,8 +46,10 @@ function isolatedEnv(extra: Record<string, string> = {}) {
 // staff-only hidden issue (platform-all #562).
 const ORDINARY_ISSUE_ID = "11111111-1111-1111-1111-111111111111";
 const HIDDEN_ISSUE_ID = "22222222-2222-2222-2222-222222222222";
+// Hidden now, but visible once before (platform-all #837: first_visible_at set).
+const REHIDDEN_ISSUE_ID = "33333333-3333-3333-3333-333333333333";
 
-async function startFakeApi(opts: { rejectHiddenWrites?: boolean; seenBy?: boolean } = {}) {
+async function startFakeApi(opts: { rejectHiddenWrites?: boolean; seenBy?: boolean; noFirstVisibleAt?: boolean } = {}) {
   const requests: Array<{
     method: string;
     pathname: string;
@@ -225,6 +227,13 @@ async function startFakeApi(opts: { rejectHiddenWrites?: boolean; seenBy?: boole
           );
         }
         const issueId = idParam.replace("eq.", "");
+        // A platform before platform-all #837 has no first_visible_at column.
+        if (opts.noFirstVisibleAt && (url.searchParams.get("select") || "").includes("first_visible_at")) {
+          return new Response(
+            JSON.stringify({ code: "42703", message: "column issues.first_visible_at does not exist" }),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+          );
+        }
         return new Response(
           JSON.stringify([
             {
@@ -237,7 +246,11 @@ async function startFakeApi(opts: { rejectHiddenWrites?: boolean; seenBy?: boole
               action_items: [],
               // Mirrors the server: the column is present on every row, and
               // carries false for anything that is not actually hidden.
-              is_hidden: issueId === HIDDEN_ISSUE_ID,
+              is_hidden: issueId === HIDDEN_ISSUE_ID || issueId === REHIDDEN_ISSUE_ID,
+              first_visible_at:
+                issueId === HIDDEN_ISSUE_ID ? null
+                : issueId === REHIDDEN_ISSUE_ID ? "2026-11-01T10:00:00+00:00"
+                : "2025-01-01T00:00:00+00:00",
             },
           ]),
           { status: 200, headers: { "Content-Type": "application/json" } }
@@ -1405,6 +1418,80 @@ describe("hidden-issue flag reaches CLI output only when true (platform-all #562
       expect("p_is_hidden" in updates[2].bodyJson).toBe(false);
     } finally {
       api.stop();
+    }
+  });
+
+  test("issues update --no-hidden --notify: requested on the first publish only, and says so", async () => {
+    const api = await startFakeApi();
+    try {
+      const env = isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl });
+      const first = await runCliAsync(["issues", "update", HIDDEN_ISSUE_ID, "--no-hidden", "--notify"], env);
+      expect(first.status).toBe(0);
+      expect(first.stderr).toContain("Notifications requested: the new-issue email and Slack post go out now.");
+      const again = await runCliAsync(["issues", "update", REHIDDEN_ISSUE_ID, "--no-hidden", "--notify", "--json"], env);
+      expect(again.status).toBe(0);
+      expect(again.stderr).toContain("Nothing sent: this issue was visible before (2026-11-01T10:00:00+00:00)");
+      expect(JSON.parse(again.stdout).notify).toEqual({
+        requested: false,
+        reason: "visible_before",
+        first_visible_at: "2026-11-01T10:00:00+00:00",
+      });
+
+      const updates = api.requests.filter((x) => x.pathname.endsWith("/rpc/issue_update"));
+      expect(updates.map((u) => u.bodyJson)).toEqual([
+        { p_id: HIDDEN_ISSUE_ID, p_is_hidden: false, p_notify: true },
+        { p_id: REHIDDEN_ISSUE_ID, p_is_hidden: false },
+      ]);
+      // The state read carries the hidden-issue capability header, like every issue request.
+      const reads = api.requests.filter((x) => x.method === "GET" && x.pathname.endsWith("/issues"));
+      expect(reads.length).toBe(2);
+      expect(reads.every((r) => r.headers["x-pgai-include-hidden"] === "true")).toBe(true);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("issues update --notify without --no-hidden is refused before any request", async () => {
+    const api = await startFakeApi();
+    try {
+      const env = isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl });
+      const res = await runCliAsync(["issues", "update", HIDDEN_ISSUE_ID, "--title", "T", "--notify"], env);
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain("--notify works only with --no-hidden");
+      expect(api.requests).toHaveLength(0);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("issues update --no-hidden --notify on a platform before notify support: clear refusal, nothing unhidden", async () => {
+    const api = await startFakeApi({ noFirstVisibleAt: true });
+    try {
+      const env = isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl });
+      const res = await runCliAsync(["issues", "update", HIDDEN_ISSUE_ID, "--no-hidden", "--notify"], env);
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain("does not support notify on unhide yet");
+      expect(api.requests.filter((x) => x.pathname.endsWith("/rpc/issue_update"))).toHaveLength(0);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("issues update --no-hidden --notify --attach: a refused notify uploads nothing", async () => {
+    const api = await startFakeApi({ noFirstVisibleAt: true });
+    const dir = mkdtempSync(resolve(tmpdir(), "notify-attach-"));
+    const file = resolve(dir, "pic.png");
+    writeFileSync(file, "PNGBYTES");
+    try {
+      const env = isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl, PGAI_STORAGE_BASE_URL: api.storageBaseUrl });
+      const res = await runCliAsync(["issues", "update", HIDDEN_ISSUE_ID, "--no-hidden", "--notify", "--attach", file], env);
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain("does not support notify on unhide yet");
+      expect(api.uploads).toHaveLength(0);
+      expect(api.requests.filter((x) => x.pathname.endsWith("/rpc/issue_update"))).toHaveLength(0);
+    } finally {
+      api.stop();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

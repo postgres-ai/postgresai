@@ -9,6 +9,8 @@ import {
   recordIssueView,
   createIssue,
   updateIssue,
+  describeNotifyOutcome,
+  checkNotifyPossible,
   updateIssueComment,
   fetchActionItem,
   fetchActionItems,
@@ -278,6 +280,14 @@ export async function handleToolCall(
       const hiddenArg = parseHiddenArg(args.is_hidden);
       if (hiddenArg.error) return hiddenArg.error;
       const hidden = hiddenArg.value;
+      // notify: like is_hidden, a real boolean or absent; only with is_hidden=false.
+      if (args.notify !== undefined && args.notify !== null && typeof args.notify !== "boolean") {
+        return { content: [{ type: "text", text: "notify must be a boolean" }], isError: true };
+      }
+      const notify = args.notify === true;
+      if (notify && hidden !== false) {
+        return { content: [{ type: "text", text: "notify works only with is_hidden=false (it notifies when the issue becomes visible)" }], isError: true };
+      }
       const attachments = Array.isArray(args.attachments) ? args.attachments.map(String).filter((p) => p.length > 0) : [];
       // Validate that at least one update field is provided (attachments alone counts)
       if (title === undefined && description === undefined && status === undefined && labels === undefined && hidden === undefined && attachments.length === 0) {
@@ -289,6 +299,10 @@ export async function handleToolCall(
       }
       const scope = resolveMcpOrgScope(args, apiKey, cfg);
       if (scope.error) return scope.error;
+      // A notify the platform would refuse is refused before any upload.
+      if (notify && attachments.length > 0) {
+        await checkNotifyPossible({ apiKey, apiBaseUrl, issueId, orgScope: scope.orgScope, debug });
+      }
       if (attachments.length > 0) {
         // If the caller did not supply a new description, fetch the existing one
         // and append to it so "add a screenshot to issue X" is one round-trip
@@ -304,8 +318,10 @@ export async function handleToolCall(
         const uploaded = await uploadAttachments({ apiKey, orgScope: scope.orgScope, storageBaseUrl, attachmentPaths: attachments, debug });
         description = appendAttachmentsToContent(description, uploaded);
       }
-      const result = await updateIssue({ apiKey, apiBaseUrl, issueId, title, description, status, labels, hidden, orgScope: scope.orgScope, debug });
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      const result = await updateIssue({ apiKey, apiBaseUrl, issueId, title, description, status, labels, hidden, notify, orgScope: scope.orgScope, debug });
+      const content = [{ type: "text", text: JSON.stringify(result, null, 2) }];
+      if (result.notify) content.push({ type: "text", text: describeNotifyOutcome(result.notify) });
+      return { content };
     }
 
     if (toolName === "update_issue_comment") {
@@ -627,6 +643,7 @@ export async function startMcpServer(rootOpts?: RootOptsLike, extra?: { debug?: 
                 description: "Local file paths to upload and append as markdown links (images render inline). When provided without 'description', the existing description is fetched and appended to.",
               },
               is_hidden: { type: "boolean", description: "true hides the issue, false unhides it (PostgresAI staff only; same as CLI --hidden / --no-hidden). Omit (or pass null) to leave unchanged." },
+              notify: { type: "boolean", description: "With is_hidden=false: send the new-issue email and Slack post (same as CLI --notify). Sent only the first time the issue becomes visible; the result says whether it was requested." },
               debug: { type: "boolean", description: "Enable verbose debug logs" },
             },
             required: ["issue_id"],

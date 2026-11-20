@@ -4,6 +4,14 @@
 
 ### Added
 
+- `pgai issues update <id> --no-hidden --notify` (MCP `update_issue` with `is_hidden: false, notify: true`) makes
+  a hidden issue visible and sends the new-issue email and Slack post, like "Make visible and notify" in the Console
+  (https://gitlab.com/postgres-ai/postgresai/-/work_items/520). The platform sends them only the first time an
+  issue becomes visible, so the CLI reads the issue first and says on stderr whether they were requested or why
+  nothing was sent (visible before, or already visible); `--json` also carries `notify`. `--notify` needs
+  `--no-hidden`; a platform without notify support refuses it with a message and nothing is unhidden. Without
+  `--notify` an unhide stays silent, as before. PostgresAI staff only.
+
 - `pgai reports list` tells checkup reports from Database health collections
   (https://gitlab.com/postgres-ai/postgresai/-/work_items/504): in a terminal each report prints as `id`, `project`,
   `type` (`Checkup`, or `Database health` with its period, e.g. `week 2026-W46 (Nov 9–15) (in progress)`), `created`
