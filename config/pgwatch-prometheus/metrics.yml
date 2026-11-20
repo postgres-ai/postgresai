@@ -2619,6 +2619,10 @@ metrics:
                 where not att.attisdropped
                   and tbl.relkind in ('r','m')
                 group by 1,2,3,4,5,6,7,8,9,10
+                -- no column statistics (never analyzed, or a table the owner of
+                -- postgres_ai.pg_statistic cannot read, #525): no estimate
+                -- rather than a false one
+                having count(s.attname) > 0
                 order by 2,3
               ) as s
             ) as s2

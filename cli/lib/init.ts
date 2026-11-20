@@ -1379,7 +1379,7 @@ export async function checkCurrentUserPermissions(
         when permission_name = 'postgres_ai.pg_statistic view exists' and granted = false then
           '-- create postgres_ai.pg_statistic view (see setup script)'
         when permission_name = 'select on postgres_ai.pg_statistic' and granted = false then
-          format('grant select on postgres_ai.pg_statistic to %I;', current_user)
+          format('grant select on postgres_ai.pg_statistic to %1$I; grant execute on function postgres_ai.pg_statistic_rows() to %1$I;', current_user)
         else null
       end as fix_command
     from permission_checks

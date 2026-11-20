@@ -2562,9 +2562,10 @@ async function dropMonitoringRole(client: PgClient, role: string): Promise<boole
 /** What the plan grants (pg_monitor and pg_read_all_stats), and what pg_monitor itself is a member of. */
 const MONITORING_GROUPS = ["pg_monitor", "pg_read_all_stats", "pg_read_all_settings", "pg_stat_scan_tables"];
 
-/** The functions the plan grants EXECUTE on (sql/04, sql/05, sql/06), as schema.name(argument types). */
+/** The functions the plan grants EXECUTE on (sql/03, sql/04, sql/05, sql/06), as schema.name(argument types). */
 const MONITORING_FUNCTIONS = ["pg_catalog.pg_stat_file(text)", "pg_catalog.pg_stat_file(text, boolean)", "pg_catalog.pg_ls_dir(text)",
-  "pg_catalog.pg_ls_dir(text, boolean, boolean)", "rds_tools.pg_ls_multixactdir()", "postgres_ai.table_describe(text)"];
+  "pg_catalog.pg_ls_dir(text, boolean, boolean)", "rds_tools.pg_ls_multixactdir()", "postgres_ai.table_describe(text)",
+  "postgres_ai.pg_statistic_rows()"];
 
 /** Undoes a `generated` prepareDatabase over the same admin URL: drops the role that run created. */
 export async function unprepareDatabase(url: string, opts: PrepareOptions = {}): Promise<boolean> {
