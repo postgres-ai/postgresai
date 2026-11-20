@@ -630,7 +630,7 @@ required** — the server will not assume an organization. Call `orgs_list` (or
 run `pgai orgs`) to discover the available ids.
 
 Tools exposed:
-- `list_issues`: returns the same JSON as `postgresai issues list` (args: `{ org_id, status?, hidden_only?, limit?, offset?, debug? }`). Unlike the CLI, omitting `status` returns open and closed issues; pass `status: "open"` to match the CLI default.
+- `list_issues`: returns the same JSON as `postgresai issues list` (args: `{ org_id, status?, hidden_only?, limit?, offset?, debug? }`; 50 issues by default, at most 500), plus a second text block with the total and how to get the next page (`Showing 1–50 of 120 open issues. Use offset=50 for the next page, or limit=120 for all.`). Unlike the CLI, omitting `status` returns open and closed issues; pass `status: "open"` to match the CLI default.
 - `view_issue`: view a single issue with its comments (args: `{ issue_id, org_id, debug? }`).
 - `create_issue`: create a new issue (args: `{ title, description?, org_id, project_id?, labels?, attachments?, is_hidden?, debug? }`).
 - `update_issue`: update title/description/status/labels/is_hidden (args: `{ issue_id, org_id, title?, description?, status?, labels?, attachments?, is_hidden?, notify?, debug? }`). `notify: true` with `is_hidden: false` asks for the new-issue email and Slack post (see `--notify` below); a second text item says whether they were requested.
@@ -685,6 +685,7 @@ sensitive.
 postgresai issues list                                       # List OPEN issues (shows: id, title, status, created_at; is_hidden only when set)
 postgresai issues list --status closed                       # Only closed issues (--status all for both)
 postgresai issues list --hidden-only                         # Only hidden issues (PostgresAI staff)
+postgresai issues list --offset 50                           # Next page (50 per page by default, --limit up to 500)
 postgresai issues view <issueId>                             # View issue details and comments
 postgresai issues create --org-id <id> <title>               # Create a new issue
 postgresai issues create --org-id <id> <title> --hidden      # Create a hidden issue (PostgresAI staff)

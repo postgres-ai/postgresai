@@ -184,6 +184,58 @@ describe("MCP Server", () => {
   });
 
   describe("list_issues tool", () => {
+    test("adds the page summary as a second block, keeping the JSON first", async () => {
+      const readConfigSpy = spyOn(config, "readConfig").mockReturnValue({
+        apiKey: "test-key",
+        baseUrl: null,
+        storageBaseUrl: null,
+        orgId: null,
+        defaultProject: null,
+        projectName: null,
+      });
+      let captured: { url: string; headers: Record<string, string> } = { url: "", headers: {} };
+      globalThis.fetch = mock((url: string, options: RequestInit) => {
+        captured = { url, headers: options.headers as Record<string, string> };
+        return Promise.resolve(
+          new Response(JSON.stringify([{ id: "issue-1", title: "First", status: 0 }]), {
+            status: 200,
+            headers: { "Content-Type": "application/json", "Content-Range": "0-0/120" },
+          })
+        );
+      }) as unknown as typeof fetch;
+
+      const response = await handleToolCall(createRequest("list_issues", { status: "open" }));
+
+      expect(response.isError).toBeUndefined();
+      expect(new URL(captured.url).searchParams.get("limit")).toBe("50");
+      expect(captured.headers.Prefer).toBe("return=representation, count=exact");
+      expect(JSON.parse(response.content[0].text)).toHaveLength(1);
+      expect(response.content[1].text).toBe(
+        "Showing 1–1 of 120 open issues. Use offset=1 for the next page, or limit=120 for all."
+      );
+
+      readConfigSpy.mockRestore();
+    });
+
+    test("no second block when the server gives no total", async () => {
+      const readConfigSpy = spyOn(config, "readConfig").mockReturnValue({
+        apiKey: "test-key",
+        baseUrl: null,
+        storageBaseUrl: null,
+        orgId: null,
+        defaultProject: null,
+        projectName: null,
+      });
+      globalThis.fetch = mock(() =>
+        Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }))
+      ) as unknown as typeof fetch;
+
+      const response = await handleToolCall(createRequest("list_issues"));
+
+      expect(response.content).toHaveLength(1);
+      readConfigSpy.mockRestore();
+    });
+
     test("successfully returns issues list as JSON", async () => {
       const mockIssues = [
         { id: "issue-1", title: "First Issue" },

@@ -198,8 +198,64 @@ export interface FetchIssuesParams {
   debug?: boolean;
 }
 
+/** Rows `issues list` and `list_issues` return when no limit is given. */
+export const DEFAULT_ISSUES_LIMIT = 50;
+
+/** The most rows the API returns for one request (PostgREST max-rows). */
+export const MAX_ISSUES_PER_REQUEST = 500;
+
+export interface IssuesPage {
+  items: IssueListItem[];
+  /** Rows skipped before this page. */
+  offset: number;
+  /** All rows matching the filters, or null when the server did not say. */
+  total: number | null;
+}
+
+/**
+ * The total from a PostgREST `Content-Range` header: "0-19/43" and "*\/43"
+ * give 43; "0-19/*", a malformed value or no header give null.
+ */
+export function parseContentRangeTotal(header: string | null): number | null {
+  const match = /\/(\d+)\s*$/.exec(header ?? "");
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * The line that tells the caller where this page sits in the whole list, so
+ * a short page is never mistaken for the complete list:
+ * "Showing 1–50 of 120 open issues. Use --offset 50 for the next page, or
+ * --limit 120 for all." `option` renders a parameter for the caller's
+ * surface (CLI flag or MCP argument). Null when the total is unknown.
+ */
+export function issuesPageSummary(
+  page: { shown: number; offset: number; total: number | null; status?: "open" | "closed"; hiddenOnly?: boolean },
+  option: (name: "offset" | "limit", value: number) => string = (name, value) => `--${name} ${value}`
+): string | null {
+  const { shown, offset, total, status, hiddenOnly } = page;
+  if (total === null) return null;
+  const noun = [hiddenOnly ? "hidden" : "", status ?? "", "issues"].filter(Boolean).join(" ");
+  if (total === 0) return `No ${noun}.`;
+  if (shown === 0 && offset >= total) {
+    return `Showing none of ${total} ${noun}: ${option("offset", offset)} is past the end.`;
+  }
+  if (shown === 0) return `Showing none of ${total} ${noun}.`;
+  const last = offset + shown;
+  let line = `Showing ${offset + 1}–${last} of ${total} ${noun}.`;
+  if (last < total) {
+    line += ` Use ${option("offset", last)} for the next page`;
+    line += total <= MAX_ISSUES_PER_REQUEST ? `, or ${option("limit", total)} for all.` : ".";
+  }
+  return line;
+}
+
 export async function fetchIssues(params: FetchIssuesParams): Promise<IssueListItem[]> {
-  const { apiKey, apiBaseUrl, orgScope, orgId, status, limit = 20, offset = 0, hiddenOnly, debug } = params;
+  return (await fetchIssuesPage(params)).items;
+}
+
+/** One page of issues plus the total matching the filters. */
+export async function fetchIssuesPage(params: FetchIssuesParams): Promise<IssuesPage> {
+  const { apiKey, apiBaseUrl, orgScope, orgId, status, limit = DEFAULT_ISSUES_LIMIT, offset = 0, hiddenOnly, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
@@ -229,6 +285,10 @@ export async function fetchIssues(params: FetchIssuesParams): Promise<IssueListI
   }
 
   const headers: Record<string, string> = issueRequestHeaders(apiKey, orgScope);
+  // count=exact makes the server put the total in Content-Range ("0-19/43").
+  // One Prefer header carrying both preferences: a second one would replace
+  // the first.
+  headers.Prefer = `${headers.Prefer}, count=exact`;
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -249,10 +309,18 @@ export async function fetchIssues(params: FetchIssuesParams): Promise<IssueListI
   }
 
   const data = await response.text();
+  const total = parseContentRangeTotal(response.headers.get("content-range"));
+
+  // With count=exact, PostgREST answers an offset past the last row with 416
+  // (range not satisfiable) and "*/<total>". That is an empty page, as it was
+  // before the count was asked for, not an error. Any other 416 is an error.
+  if (response.status === 416 && total !== null && offset >= total) {
+    return { items: [], offset, total };
+  }
 
   if (response.ok) {
     try {
-      return JSON.parse(data) as IssueListItem[];
+      return { items: JSON.parse(data) as IssueListItem[], offset, total };
     } catch {
       throw new Error(`Failed to parse issues response: ${data}`);
     }

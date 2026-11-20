@@ -2,7 +2,10 @@ import pkg from "../package.json";
 import * as config from "./config";
 import { resolveMcpOrgScope } from "./org-scope-mcp";
 import {
-  fetchIssues,
+  fetchIssuesPage,
+  issuesPageSummary,
+  DEFAULT_ISSUES_LIMIT,
+  MAX_ISSUES_PER_REQUEST,
   fetchIssueComments,
   createIssueComment,
   fetchIssue,
@@ -171,15 +174,23 @@ export async function handleToolCall(
       const limit = args.limit !== undefined ? Number(args.limit) : undefined;
       const offset = args.offset !== undefined ? Number(args.offset) : undefined;
       const hiddenOnly = Boolean(args.hidden_only);
-      // Staff-only in effect, mirroring `issues list --hidden-only`: fetchIssues
+      // Staff-only in effect, mirroring `issues list --hidden-only`: fetchIssuesPage
       // adds the server-side is_hidden=eq.true filter, which returns nothing for
       // a non-staff key (hidden rows are filtered out for them upstream anyway).
-      const issues = await fetchIssues({ apiKey, apiBaseUrl, orgId, orgScope: scope.orgScope, status, limit, offset, hiddenOnly, debug });
+      const page = await fetchIssuesPage({ apiKey, apiBaseUrl, orgId, orgScope: scope.orgScope, status, limit, offset, hiddenOnly, debug });
       // Same "render is_hidden only when true" rule as `issues list`: a non-staff
       // MCP client can only ever get is_hidden=false, and emitting that false would
       // itself disclose the hidden-issue mechanism. Drop it unless it is true.
-      const trimmed = issues.map((issue) => presentIssue(issue));
-      return { content: [{ type: "text", text: JSON.stringify(trimmed, null, 2) }] };
+      const trimmed = page.items.map((issue) => presentIssue(issue));
+      const content = [{ type: "text", text: JSON.stringify(trimmed, null, 2) }];
+      // The CLI prints this line on stderr, which an MCP client never sees, so
+      // it rides as a second block; the first stays the bare JSON array.
+      const summary = issuesPageSummary(
+        { shown: page.items.length, offset: page.offset, total: page.total, status, hiddenOnly },
+        (name, value) => `${name}=${value}`
+      );
+      if (summary) content.push({ type: "text", text: summary });
+      return { content };
     }
 
     if (toolName === "view_issue") {
@@ -551,7 +562,7 @@ export async function startMcpServer(rootOpts?: RootOptsLike, extra?: { debug?: 
             properties: {
               org_id: { type: "number", description: "Organization ID. Optional with a per-organization token (falls back to config); REQUIRED with a global token, which can reach every organization the user belongs to and will not assume one. Use orgs_list / `pgai orgs` to discover valid values." },
               status: { type: "string", description: "Filter by status: 'open', 'closed', or omit for all (note: the CLI defaults to open). Rows carry status as 'open'/'closed'." },
-              limit: { type: "number", description: "Max number of issues to return (default: 20)" },
+              limit: { type: "number", description: `Max number of issues to return (default: ${DEFAULT_ISSUES_LIMIT}; the API returns at most ${MAX_ISSUES_PER_REQUEST}). A second text block says which rows of how many were returned and how to get the rest.` },
               offset: { type: "number", description: "Number of issues to skip (default: 0)" },
               hidden_only: { type: "boolean", description: "List only hidden issues (PostgresAI staff; same as CLI --hidden-only)" },
               debug: { type: "boolean", description: "Enable verbose debug logs" },

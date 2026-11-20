@@ -12,7 +12,7 @@ import { fileURLToPath } from "url";
 import * as crypto from "node:crypto";
 import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
-import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, recordIssueView, cliViewVia, createIssue, updateIssue, describeNotifyOutcome, checkNotifyPossible, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
+import { fetchIssuesPage, issuesPageSummary, DEFAULT_ISSUES_LIMIT, MAX_ISSUES_PER_REQUEST, fetchIssueComments, createIssueComment, fetchIssue, recordIssueView, cliViewVia, createIssue, updateIssue, describeNotifyOutcome, checkNotifyPossible, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate, formatReportsForTerminal, type ReportKind } from "../lib/reports";
 import { boxWords, CancelledError, clickhouseKeyHeld, LOOKUP_MS, NOT_CONFIRMED, STILL_CREATING, STILL_IN_PROGRESS, STOPPED_LOOKING, caNote, connect, connectStatus, httpStatus, pickPlace, type DeployOptions, resultLines, stepProgress, stepViewEnd, listedDatabase, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, providerArg, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status, type SupabaseProject, supabaseProjectRows, terminalText, privateLinkOf, privateLinkFailure, overPrivateLink, stackTeardown, verifiedWords } from "../lib/connect";
 import {
@@ -7566,7 +7566,7 @@ const issues = program.command("issues").description("issues management");
 withOrgOptions(issues.command("list"))
   .description("list issues")
   .option("--status <status>", "filter by status: open (default), closed, or all")
-  .option("--limit <n>", "max number of issues to return (default: 20)", parseInt)
+  .option("--limit <n>", `max number of issues to return (default: ${DEFAULT_ISSUES_LIMIT}; the API returns at most ${MAX_ISSUES_PER_REQUEST})`, parseInt)
   .option("--offset <n>", "number of issues to skip (default: 0)", parseInt)
   .option("--hidden-only", "list only hidden issues (PostgresAI staff)")
   .option("--debug", "enable debug output")
@@ -7608,7 +7608,7 @@ withOrgOptions(issues.command("list"))
         return;
       }
 
-      const result = await fetchIssues({
+      const page = await fetchIssuesPage({
         apiKey,
         apiBaseUrl,
         orgId,
@@ -7620,6 +7620,7 @@ withOrgOptions(issues.command("list"))
         debug: !!opts.debug,
       });
       spinner.stop();
+      const result = page.items;
       const trimmed = Array.isArray(result)
         ? (result as any[]).map((r) =>
             // Route through the same helper as `issues view` so the status
@@ -7634,6 +7635,17 @@ withOrgOptions(issues.command("list"))
           )
         : result;
       printResult(trimmed, opts.json);
+      // Where this page sits in the whole list, on every call: stdout stays
+      // the bare array, and an agent reading both streams learns whether it
+      // has everything.
+      const summary = issuesPageSummary({
+        shown: Array.isArray(result) ? result.length : 0,
+        offset: page.offset,
+        total: page.total,
+        status: statusFilter,
+        hiddenOnly: !!opts.hiddenOnly,
+      });
+      if (summary) console.error(summary);
     } catch (err) {
       spinner.stop();
       const message = err instanceof Error ? err.message : String(err);
