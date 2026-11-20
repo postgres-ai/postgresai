@@ -569,6 +569,72 @@ $$`);
     }
   }, { timeout: 60000 });
 
+  test("postgres_ai.pg_statistic gives column statistics even when its owner cannot read pg_statistic (#525)", async () => {
+    pg = await createTempPostgres();
+    const admin = new Client({ connectionString: pg.adminUri });
+    const password = "test-only-mon-525";
+    try {
+      await admin.connect();
+      // A role that an earlier prepare-db gave SELECT on the old (join) view.
+      await admin.query("create role prev_mon_525 nologin");
+      await admin.query("create schema postgres_ai");
+      await admin.query(`create view postgres_ai.pg_statistic as
+        select n.nspname as schemaname, c.relname as tablename, a.attname,
+               s.stanullfrac as null_frac, s.stawidth as avg_width, false as inherited
+        from pg_catalog.pg_statistic s
+        join pg_catalog.pg_class c on c.oid = s.starelid
+        join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+        join pg_catalog.pg_attribute a on a.attrelid = s.starelid and a.attnum = s.staattnum
+        where a.attnum > 0 and not a.attisdropped`);
+      await admin.query("grant select on postgres_ai.pg_statistic to prev_mon_525");
+      const { buildInitPlan, applyInitPlan } = await import("../lib/init");
+      const plan = await buildInitPlan({ database: "testdb", monitoringPassword: password, includeOptionalPermissions: false });
+      await applyInitPlan({ client: admin, plan });
+      // The earlier role keeps working now that the view reads the function.
+      expect((await admin.query(
+        "select has_function_privilege('prev_mon_525', 'postgres_ai.pg_statistic_rows()', 'EXECUTE') as ok",
+      )).rows[0].ok).toBe(true);
+      await admin.query("create table public.stats_t as select g as id, md5(g::text) as note from generate_series(1, 40000) g");
+      await admin.query("analyze public.stats_t");
+
+      const mon = new Client({ host: "127.0.0.1", port: pg.port, user: "postgres_ai_mon", database: "testdb", password });
+      const rowsFor = async (table: string) =>
+        Number((await mon.query(
+          "select count(*)::int as n from postgres_ai.pg_statistic where schemaname = 'public' and tablename = $1", [table],
+        )).rows[0].n);
+      try {
+        await mon.connect();
+        // Owned by a superuser: statistics for a table the monitoring role cannot read.
+        expect(await rowsFor("stats_t")).toBeGreaterThan(0);
+
+        // Owned by a role that cannot read pg_statistic, as rds_superuser on current
+        // RDS minors (17.11, 18.6): statistics for the tables that owner can read.
+        await admin.query("create role stats_owner_525 nologin");
+        await admin.query("create table public.owned_t as select g as id, md5(g::text) as note from generate_series(1, 40000) g");
+        await admin.query("analyze public.owned_t");
+        await admin.query("alter table public.owned_t owner to stats_owner_525");
+        await admin.query("alter view postgres_ai.pg_statistic owner to stats_owner_525");
+        await admin.query(`do $$ begin
+          if to_regprocedure('postgres_ai.pg_statistic_rows()') is not null then
+            alter function postgres_ai.pg_statistic_rows() owner to stats_owner_525;
+          end if;
+        end $$`);
+        expect(await rowsFor("owned_t")).toBeGreaterThan(0);
+
+        // The table-bloat metric, as the box runs it: a table the owner cannot
+        // read has no statistics now, so it gets no estimate instead of a false one.
+        const { getMetricSql, METRIC_NAMES } = await import("../lib/metrics-loader");
+        const bloat = await mon.query(getMetricSql(METRIC_NAMES.F004, 17));
+        const tables = bloat.rows.map((r: { tag_tblname: string }) => r.tag_tblname);
+        expect(tables).toContain("owned_t");
+        expect(tables).not.toContain("stats_t");
+      } finally { await mon.end(); }
+    } finally {
+      await admin.end();
+      await pg.cleanup();
+    }
+  }, { timeout: 60000 });
+
   test("prepare and unprepare accept dollar quotes and apostrophes in role and database names", async () => {
     pg = await createTempPostgres();
     const admin = new Client({ connectionString: pg.adminUri });

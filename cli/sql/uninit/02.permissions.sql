@@ -6,8 +6,9 @@ set search_path = pg_catalog, pg_temp;
 -- The CLI reads the "unprepare-db:" WARNINGs. A higher setting would hide them.
 set client_min_messages = warning;
 
--- Drop the postgres_ai.pg_statistic view
+-- Drop the postgres_ai.pg_statistic view and the function it reads (#525)
 drop view if exists postgres_ai.pg_statistic;
+drop function if exists postgres_ai.pg_statistic_rows();
 
 -- Revoke only the grants that the role holds. The postgres_ai schema stays
 -- because it may contain customer objects. The pg_read_all_stats membership
