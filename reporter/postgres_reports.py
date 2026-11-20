@@ -7242,10 +7242,11 @@ class PostgresReportGenerator:
             else:
                 units[0]["nodes"]["standbys"].append(standby)
                 unassigned.append(standby)
+        kept = (f"Nodes without a unique primary assignment: {unassigned}; "
+                f"keeping them with first primary '{primaries[0]}'. ") if unassigned else ""
         logger.warning(
             f"Multiple primary nodes detected in cluster '{cluster}': {primaries}; "
-            f"generating one report per primary. Nodes without a unique primary assignment: {unassigned}; "
-            f"keeping them with first primary '{primaries[0]}'. "
+            f"generating one report per primary. {kept}"
             "Assign unrelated nodes separate clusters with mon targets add --cluster <name> "
             "(custom_tags.cluster in instances.yml for existing targets).")
         return units

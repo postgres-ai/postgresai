@@ -37,6 +37,17 @@ def test_two_unrelated_primaries(topology):
     ]
 
 
+def test_warning_names_no_unassigned_nodes_when_every_node_is_placed(topology, monkeypatch):
+    gen = topology({'p1': 0, 'p2': 0, 's1': 1},
+                   {'p1': ['7312345678901234560'], 'p2': ['7312345678901234561'], 's1': ['7312345678901234560']})
+    warning = Mock()
+    monkeypatch.setattr(postgres_reports.logger, 'warning', warning)
+    gen.get_reporting_units('default')
+    message = warning.call_args.args[0]
+    assert "one report per primary" in message and '--cluster' in message
+    assert 'without a unique primary' not in message and '[]' not in message
+
+
 @pytest.mark.parametrize('unassigned_ids', [[None], [''], ['unrelated'], ['one', 'two']])
 def test_standbys_follow_unique_system_identifier(topology, monkeypatch, unassigned_ids):
     gen = topology({'p1': 0, 'p2': 0, 's1': 1, 's2': 1, 'orphan': 1, 'unknown': None},

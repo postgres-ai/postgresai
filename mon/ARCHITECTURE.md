@@ -376,6 +376,17 @@ there is no retry polling. Outage recovery still uses the separate `lost` state.
   Moving Grafana bounds share entries only when all used window parameters stay equal. Changes to rollups or the registry, and removal
   of any evaluator file, invalidate conservatively even when an individual query could be
   unaffected. Mixed raw-table SQL outside the verified query-text join and unproven macros remain generation-bound.
+- A job that runs every 60 s or more often is not retried after a lock timeout
+  (`collector.lock_timeout_ms`, 100 ms by default, as in pgwatch): its chart misses that run's
+  point. The 30-second jobs that read relation sizes (`pg_class`, `pg_total_relation_size`,
+  `db_size`, `table_stats`, `table_size_detailed`) hit it while a relation or index they read
+  is held by an `ACCESS EXCLUSIVE` lock (most `ALTER TABLE` forms, `TRUNCATE`, `VACUUM FULL`,
+  `REINDEX`). `table_stats` and `table_size_detailed` first leave out a table that is itself
+  so locked, so for that run their totals omit it instead of failing; a lock on one of its
+  indexes still cancels them.
+- Object history (`objects`) is a snapshot every `collector.objects_interval_s` (600 s):
+  `valid_from` and `valid_to` are snapshot times, up to 10 minutes after the change, and an
+  object created and dropped between two snapshots is not recorded.
 - Publishing a new query snapshot waits for running queries. Remote file downloads happen
   before that wait, so other queries can still use the previous snapshot while copying.
 
