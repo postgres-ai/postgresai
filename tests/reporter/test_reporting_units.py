@@ -143,10 +143,10 @@ def test_main_writes_and_uploads_each_unit(topology, monkeypatch, tmp_path, extr
         return {'db': {'42': f'select {node_name}'}}
     monkeypatch.setattr(gen, 'get_queryid_queries_from_sink', texts)
     queried = []
-    def metrics(cluster, node, db, qid, **kwargs):
+    def metrics(cluster, node, queryids, **kwargs):
         queried.append((cluster, node))
-        return {'calls': 1}
-    monkeypatch.setattr(gen, 'get_query_metrics_from_prometheus', metrics)
+        return {('db', qid): {'calls': 1} for qid in queryids}
+    monkeypatch.setattr(gen, 'get_queries_metrics_from_prometheus', metrics)
     calls = []
     report_ids = iter(range(101, 103 + len(extra_clusters)))
     def request(api, endpoint, data):

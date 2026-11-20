@@ -11,6 +11,8 @@ samples:
 - every report (all checks, the per-query files, and the paths generate_all_reports leaves out:
   D004/F001/G001 read directly, K001 over 30 minutes) generated from the cassette with the same
   report generated from pgai-mon, and the latter against reporter/schemas.
+- on pgai-mon only, the per-query files' batched metrics (#524) with the per-statement query,
+  for every statement, node and database.
 
 Tolerances: mon_equiv.TOLERANCES. Re-record the cassette with mon_fixture/record.py after a change
 to any query string (the test names the missing queries).
@@ -82,8 +84,9 @@ def test_every_cassette_query_matches_victoriametrics(mon, cassette):
         if d:
             diffs[e["query"]] = d[:3]
     assert not diffs, f"{len(diffs)} of {len(cassette)} queries differ: {list(diffs.items())[:5]}"
-    # the fixture must keep exercising the queries (an empty store would match trivially)
-    assert len(cassette) >= 1450 and nonempty >= 700, (len(cassette), nonempty)
+    # the fixture must keep exercising the queries (an empty store would match trivially); 499
+    # recorded, 427 non-empty since the per-query files batch their statements (#524)
+    assert len(cassette) >= 480 and nonempty >= 400, (len(cassette), nonempty)
 
 
 def test_range_errors_are_not_silent(mon):
@@ -113,6 +116,38 @@ def test_per_query_files_match_victoriametrics(reports):
     assert files == sorted(k for k in new if k.endswith(".json"))
     diffs = {f: eq.diff_json(old[f], new[f])[:3] for f in files if eq.diff_json(old[f], new[f])}
     assert not diffs, diffs
+
+
+@pytest.mark.parametrize("chunk", [100, 7])
+def test_batched_per_query_metrics_equal_per_statement_queries(mon, reports, chunk):
+    """#524: the per-query files fetch each metric for many statements in one query. On pgai-mon,
+    for every statement, node and database of the fixture, that equals the per-statement query.
+    A chunk of 7 (not a divisor of the fixture's statement count) merges several chunks."""
+    _, new, _ = reports
+    gen = eq.make_generator(mon_url=mon.url)
+    gen.QUERYID_CHUNK = chunk
+    checks = {c: new[c] for c in CHECKS}
+    with eq.frozen():
+        queryids_by_db = gen.extract_queryids_from_reports(checks)
+        nodes = gen.get_all_nodes("local")
+        node_names = [nodes["primary"], *nodes.get("standbys", [])]
+        ids = sorted(set().union(*queryids_by_db.values()))
+        assert len(ids) > 2 * chunk or chunk == 100, len(ids)
+        compared, diffs = 0, []
+        for node in node_names:
+            batch = gen.get_queries_metrics_from_prometheus("local", node, ids, hours=24)
+            for db, qids in queryids_by_db.items():
+                for qid in qids:
+                    one = gen.get_query_metrics_from_prometheus("local", node, db, qid, hours=24)
+                    one.pop("time_range")
+                    got = batch.get((db, qid), {})
+                    compared += bool(one)
+                    if list(got) != list(one) or not all(eq.close(got[k], one[k]) for k in one):
+                        diffs.append((node, db, qid, one, got))
+    assert not diffs, diffs[:3]
+    # the fixture must keep exercising it: 24 statement x node x database combinations with
+    # metrics in the fixture
+    assert compared >= 20, compared
 
 
 def test_reports_have_content(reports):

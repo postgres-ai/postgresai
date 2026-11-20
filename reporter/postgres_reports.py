@@ -6854,11 +6854,39 @@ class PostgresReportGenerator:
 
         return queryids_by_db
 
+    # pg_stat_statements metrics of the per-query files (matching Dashboard 3): file key -> metric
+    PGSS_QUERY_METRICS = {
+        'calls': 'pgwatch_pg_stat_statements_calls',
+        'exec_time_ms': 'pgwatch_pg_stat_statements_exec_time_total',
+        'plan_time_ms': 'pgwatch_pg_stat_statements_plan_time_total',
+        'rows': 'pgwatch_pg_stat_statements_rows',
+        'shared_blks_hit_bytes': 'pgwatch_pg_stat_statements_shared_bytes_hit_total',
+        'shared_blks_read_bytes': 'pgwatch_pg_stat_statements_shared_bytes_read_total',
+        'shared_blks_dirtied_bytes': 'pgwatch_pg_stat_statements_shared_bytes_dirtied_total',
+        'shared_blks_written_bytes': 'pgwatch_pg_stat_statements_shared_bytes_written_total',
+        'wal_bytes': 'pgwatch_pg_stat_statements_wal_bytes',
+        'wal_fpi': 'pgwatch_pg_stat_statements_wal_fpi',
+        'wal_records': 'pgwatch_pg_stat_statements_wal_records',
+        'temp_bytes_read': 'pgwatch_pg_stat_statements_temp_bytes_read',
+        'temp_bytes_written': 'pgwatch_pg_stat_statements_temp_bytes_written',
+        'blk_read_time_ms': 'pgwatch_pg_stat_statements_block_read_total',
+        'blk_write_time_ms': 'pgwatch_pg_stat_statements_block_write_total',
+        'jit_generation_time_ms': 'pgwatch_pg_stat_statements_jit_generation_time',
+        'jit_inlining_time_ms': 'pgwatch_pg_stat_statements_jit_inlining_time',
+        'jit_optimization_time_ms': 'pgwatch_pg_stat_statements_jit_optimization_time',
+        'jit_emission_time_ms': 'pgwatch_pg_stat_statements_jit_emission_time',
+    }
+
+    # Statement ids per batched query: bounds the series each query reads on pgai-mon (#524)
+    QUERYID_CHUNK = 100
+
     def get_query_metrics_from_prometheus(self, cluster: str, node_name: str, db_name: str,
                                           queryid: str, hours: int = 24) -> Dict[str, Any]:
         """
         Get all pg_stat_statements metrics for a specific query directly from Prometheus.
         Fetches daily totals for all metrics shown on Dashboard 3 (Single queryid analysis).
+        The per-query files use get_queries_metrics_from_prometheus (#524); this one stays as
+        the per-statement reference the tests compare it with.
 
         Args:
             cluster: Cluster name
@@ -6887,31 +6915,8 @@ class PostgresReportGenerator:
         end_s = self._floor_hour(now)
         start_s = end_s - (hours * 3600)  # Exact hours back from end
 
-        # All pg_stat_statements metrics to fetch (matching Dashboard 3)
-        pgss_metrics = {
-            'calls': 'pgwatch_pg_stat_statements_calls',
-            'exec_time_ms': 'pgwatch_pg_stat_statements_exec_time_total',
-            'plan_time_ms': 'pgwatch_pg_stat_statements_plan_time_total',
-            'rows': 'pgwatch_pg_stat_statements_rows',
-            'shared_blks_hit_bytes': 'pgwatch_pg_stat_statements_shared_bytes_hit_total',
-            'shared_blks_read_bytes': 'pgwatch_pg_stat_statements_shared_bytes_read_total',
-            'shared_blks_dirtied_bytes': 'pgwatch_pg_stat_statements_shared_bytes_dirtied_total',
-            'shared_blks_written_bytes': 'pgwatch_pg_stat_statements_shared_bytes_written_total',
-            'wal_bytes': 'pgwatch_pg_stat_statements_wal_bytes',
-            'wal_fpi': 'pgwatch_pg_stat_statements_wal_fpi',
-            'wal_records': 'pgwatch_pg_stat_statements_wal_records',
-            'temp_bytes_read': 'pgwatch_pg_stat_statements_temp_bytes_read',
-            'temp_bytes_written': 'pgwatch_pg_stat_statements_temp_bytes_written',
-            'blk_read_time_ms': 'pgwatch_pg_stat_statements_block_read_total',
-            'blk_write_time_ms': 'pgwatch_pg_stat_statements_block_write_total',
-            'jit_generation_time_ms': 'pgwatch_pg_stat_statements_jit_generation_time',
-            'jit_inlining_time_ms': 'pgwatch_pg_stat_statements_jit_inlining_time',
-            'jit_optimization_time_ms': 'pgwatch_pg_stat_statements_jit_optimization_time',
-            'jit_emission_time_ms': 'pgwatch_pg_stat_statements_jit_emission_time',
-        }
-
         # Fetch each metric
-        for metric_key, metric_name in pgss_metrics.items():
+        for metric_key, metric_name in self.PGSS_QUERY_METRICS.items():
             try:
                 # Query for total increase over the time range
                 query = f'sum(increase({metric_name}{filter_str}[{hours}h]))'
@@ -6936,6 +6941,43 @@ class PostgresReportGenerator:
         }
 
         return metrics
+
+    def get_queries_metrics_from_prometheus(self, cluster: str, node_name: str, queryids: Sequence[str],
+                                            hours: int = 24) -> Dict[Tuple[str, str], Dict[str, float]]:
+        """The per-query file metrics of many statements on one node: {(datname, queryid): metrics},
+        the same values get_query_metrics_from_prometheus returns for each one (non-zero only).
+        One instant query per metric and chunk of QUERYID_CHUNK statements, instead of one per
+        metric, statement and database (#524). A failed query leaves that metric out for its chunk."""
+        _esc = self._escape_promql_label
+        ids = sorted(set(str(q) for q in queryids if q))
+        out: Dict[Tuple[str, str], Dict[str, float]] = {}
+        for i in range(0, len(ids), self.QUERYID_CHUNK):
+            chunk = ids[i:i + self.QUERYID_CHUNK]
+            # PromQL anchors =~; queryids are integers, the escape covers anything else
+            alt = '|'.join(re.sub(r'([\\.+*?()|\[\]{}^$])', r'\\\1', q) for q in chunk)
+            filter_str = (f'{{cluster="{_esc(cluster)}",node_name="{_esc(node_name)}",'
+                          f'queryid=~"{_esc(alt)}"}}')
+            for metric_key, metric_name in self.PGSS_QUERY_METRICS.items():
+                try:
+                    result = self.query_instant(
+                        f'sum by (datname, queryid) (increase({metric_name}{filter_str}[{hours}h]))')
+                except Exception as e:
+                    logger.error(f"Query error: {e}")
+                    result = {}
+                if not isinstance(result, dict) or result.get('status') != 'success':
+                    logger.warning(f"Per-query files: {metric_key} on node {node_name} failed for "
+                                   f"{len(chunk)} statements; left out of their files")
+                    continue
+                for item in (result.get('data') or {}).get('result') or []:
+                    labels = item.get('metric') or {}
+                    try:
+                        value = float(item['value'][1]) if item.get('value') else 0
+                    except (TypeError, ValueError, IndexError):
+                        continue
+                    if value > 0:
+                        key = (labels.get('datname', ''), labels.get('queryid', ''))
+                        out.setdefault(key, {})[metric_key] = value
+        return out
 
     def generate_per_query_jsons(self, reports: Dict[str, Any], cluster: str,
                                  node_name: str = None,
@@ -7028,6 +7070,17 @@ class PostgresReportGenerator:
         total_queries = len(dbs_by_queryid)
         processed = 0
 
+        # Every statement's metrics, per node, in a few queries (#524)
+        metrics_by_node = {n: self.get_queries_metrics_from_prometheus(cluster, n, list(dbs_by_queryid), hours=hours)
+                           for n in nodes_to_process}
+        end_s = self._floor_hour(int(time.time()))
+        start_s = end_s - (hours * 3600)
+        time_range = {
+            'hours': hours,
+            'start_time': datetime.fromtimestamp(start_s).isoformat(),
+            'end_time': datetime.fromtimestamp(end_s).isoformat()
+        }
+
         # Process deterministically (helps debugging)
         for queryid in sorted(dbs_by_queryid.keys()):
             processed += 1
@@ -7053,22 +7106,9 @@ class PostgresReportGenerator:
 
             # Build results: results[node_name][db_name] = {"metrics": {...}}
             results_by_node: Dict[str, Dict[str, Any]] = {}
-            time_range = None
-
             for n in nodes_to_process:
-                node_block: Dict[str, Any] = {}
-                for db_name in dbs_for_query:
-                    metrics = self.get_query_metrics_from_prometheus(
-                        cluster, n, db_name, queryid, hours=hours
-                    )
-                    # Pull out time_range once and keep per-db metrics clean
-                    if time_range is None and isinstance(metrics, dict):
-                        time_range = metrics.pop("time_range", None)
-                    elif isinstance(metrics, dict):
-                        metrics.pop("time_range", None)
-
-                    node_block[db_name] = {"metrics": metrics}
-                results_by_node[n] = node_block
+                results_by_node[n] = {db_name: {"metrics": dict(metrics_by_node[n].get((db_name, queryid), {}))}
+                                      for db_name in dbs_for_query}
 
             # Create filename (match per-check report prefix logic)
             # - Single-cluster: query_<queryid>.json

@@ -265,13 +265,12 @@ def test_generate_per_query_jsons_without_api_url(generator) -> None:
 
     # Mock the methods that would be called
     with patch.object(generator, 'pg_conn', None):
-        with patch.object(generator, 'get_query_metrics_from_prometheus', return_value={}):
+        with patch.object(generator, 'get_queries_metrics_from_prometheus', return_value={}):
             result = generator.generate_per_query_jsons(
                 reports,
                 "test-cluster",
-                None,  # No API URL
-                None,
-                None
+                node_name=None,
+                api_url=None,
             )
 
     assert isinstance(result, list)

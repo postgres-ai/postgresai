@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Monitoring v4's reporter fetches each per-query file metric for up to 100 statements of a node in one query, instead of one query per statement and database. On a 2 vCPU box with a PG 17 primary, its standby and a PG 13 primary, a report run takes 5.6 minutes instead of 13.5, and its per-query files 22 seconds instead of 9 minutes; the files are unchanged (postgres-ai/postgresai#524).
+
 - Monitoring v4 lets heavy panel queries use both slots on two-slot hosts. Short queries go first while heavy waiters are fresh; arrival-plus-service-time ageing prevents starvation under sustained short traffic. The memory gate stays in force (postgres-ai/postgresai#516).
 
 - Monitoring v4 dashboard reloads share cached results when their aligned windows and other parameters are equal. Raw table windows and instant semantics stay exact; related flushes overlapping the full fetch window still invalidate results (postgres-ai/postgresai#516).
