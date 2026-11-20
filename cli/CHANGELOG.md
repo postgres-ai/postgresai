@@ -56,6 +56,11 @@
 
 ### Changed
 
+- `pgai issues list` returns 50 issues by default (was 20) and prints the total on stderr on every call, so a
+  short page is no longer mistaken for the whole list: `Showing 1–43 of 43 open issues.`, or `Showing 1–50 of 120
+  open issues. Use --offset 50 for the next page, or --limit 120 for all.` stdout is unchanged (the same JSON array).
+  An `--offset` past the end prints `[]` and says so. The MCP `list_issues` tool also defaults to 50 and returns the
+  same line as a second text block. `--limit` goes up to 500, the most the API returns per request.
 - `pgai mon deploy`, `pgai mon instances list` / `watch` (`status`) and the MCP `deploy_monitoring` tool link to the
   project's Database health, the console's default project view (`<console>/<org>/projects/<project>/health-preview`),
   instead of its Health Matrix (https://gitlab.com/postgres-ai/postgresai/-/work_items/522). `health_url` keeps its

@@ -570,8 +570,10 @@ only that collection is running and when the initial checkup is expected.
 **After the signal**, read the report's checks with `pgai reports data
 <report_id> --org <alias> --type json`, warnings first (`--check-id
 <check_id>` for one check), and the issues PostgresAI opened: `pgai issues
-list --org <alias> --json` lists the organization's open issues, newest first,
-and does not say which database each one is for. Report those with
+list --org <alias> --limit 500 --json` lists the organization's open issues,
+newest first, and does not say which database each one is for. It prints the
+total on stderr ("Showing 1–43 of 43 open issues."); if it says more are left,
+get them with the `--offset` it names before you report anything. Report those with
 `created_at` after the deploy started, and say the list is organization-wide.
 If this database was monitored before, older open issues may be its own too:
 PostgresAI reuses an open issue instead of opening a second one. The first
