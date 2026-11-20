@@ -17,18 +17,24 @@ def fixture_generator() -> PostgresReportGenerator:
     )
 
 
-def _fake_metrics(cluster: str, node_name: str, db_name: str, queryid: str, hours: int) -> dict[str, Any]:
-    # Return a fresh dict each call because generator pops "time_range".
-    return {
-        "calls": float(len(node_name) + len(db_name)),
-        "total_time": float(len(queryid)),
-        "rows": float(hours),
-        "time_range": {
-            "hours": hours,
-            "start_time": "2025-01-01T00:00:00+00:00",
-            "end_time": "2025-01-02T00:00:00+00:00",
-        },
-    }
+class _FakeBatch(dict):
+    """get_queries_metrics_from_prometheus's reply for one node: metrics for any (datname, queryid)."""
+
+    def __init__(self, node_name: str, hours: int):
+        super().__init__()
+        self.node_name, self.hours = node_name, hours
+
+    def get(self, key, default=None):
+        db_name, queryid = key
+        return {
+            "calls": float(len(self.node_name) + len(db_name)),
+            "total_time": float(len(queryid)),
+            "rows": float(self.hours),
+        }
+
+
+def _fake_batch(cluster: str, node_name: str, queryids, hours: int) -> _FakeBatch:
+    return _FakeBatch(node_name, hours)
 
 
 @pytest.mark.unit
@@ -57,7 +63,7 @@ def test_generate_per_query_jsons_groups_by_queryid_and_is_node_first(
         "get_all_nodes",
         lambda cluster: {"primary": "main", "standbys": ["replica-1", "replica-2"]},
     )
-    monkeypatch.setattr(generator, "get_query_metrics_from_prometheus", _fake_metrics)
+    monkeypatch.setattr(generator, "get_queries_metrics_from_prometheus", _fake_batch)
 
     out = generator.generate_per_query_jsons(
         reports={"K001": {}},
@@ -82,7 +88,10 @@ def test_generate_per_query_jsons_groups_by_queryid_and_is_node_first(
     assert set(q1["results"].keys()) == {"main", "replica-1", "replica-2"}
     assert set(q1["results"]["main"].keys()) == {"airflow_db_prod", "db_b"}
 
-    # time_range moved to top-level and removed from per-db metrics.
+    # Each node's batch reply lands in that node's blocks.
+    assert q1["results"]["replica-1"]["db_b"]["metrics"] == {"calls": 13.0, "total_time": 5.0, "rows": 24.0}
+
+    # time_range is top-level, not in per-db metrics.
     assert q1["time_range"]["hours"] == 24
     assert "time_range" not in q1["results"]["main"]["airflow_db_prod"]["metrics"]
 
@@ -99,7 +108,7 @@ def test_generate_per_query_jsons_write_immediately_prefixes_cluster_and_writes_
         generator, "get_queryid_queries_from_sink", lambda *args, **kwargs: {"db1": {"qid_1": "SELECT 1"}}
     )
     monkeypatch.setattr(generator, "get_all_nodes", lambda cluster: {"primary": "main", "standbys": ["replica-1"]})
-    monkeypatch.setattr(generator, "get_query_metrics_from_prometheus", _fake_metrics)
+    monkeypatch.setattr(generator, "get_queries_metrics_from_prometheus", _fake_batch)
 
     out = generator.generate_per_query_jsons(
         reports={"K001": {}},
@@ -166,7 +175,7 @@ def test_generate_per_query_jsons_handles_missing_query_text(
         "get_all_nodes",
         lambda cluster: {"primary": "main", "standbys": []},
     )
-    monkeypatch.setattr(generator, "get_query_metrics_from_prometheus", _fake_metrics)
+    monkeypatch.setattr(generator, "get_queries_metrics_from_prometheus", _fake_batch)
 
     out = generator.generate_per_query_jsons(
         reports={"K001": {}},
@@ -202,7 +211,7 @@ def test_generate_per_query_jsons_without_cluster_prefix(
         "get_all_nodes",
         lambda cluster: {"primary": "main", "standbys": []},
     )
-    monkeypatch.setattr(generator, "get_query_metrics_from_prometheus", _fake_metrics)
+    monkeypatch.setattr(generator, "get_queries_metrics_from_prometheus", _fake_batch)
 
     out = generator.generate_per_query_jsons(
         reports={"K001": {}},
@@ -233,7 +242,7 @@ def test_generate_per_query_jsons_with_single_node(
         "get_queryid_queries_from_sink",
         lambda *args, **kwargs: {"db1": {"qid_1": "SELECT 1"}},
     )
-    monkeypatch.setattr(generator, "get_query_metrics_from_prometheus", _fake_metrics)
+    monkeypatch.setattr(generator, "get_queries_metrics_from_prometheus", _fake_batch)
 
     out = generator.generate_per_query_jsons(
         reports={"K001": {}},
@@ -273,7 +282,7 @@ def test_generate_per_query_jsons_uses_default_node_when_none_found(
         "get_all_nodes",
         lambda cluster: {"primary": None, "standbys": []},  # No nodes found
     )
-    monkeypatch.setattr(generator, "get_query_metrics_from_prometheus", _fake_metrics)
+    monkeypatch.setattr(generator, "get_queries_metrics_from_prometheus", _fake_batch)
 
     out = generator.generate_per_query_jsons(
         reports={"K001": {}},
@@ -289,5 +298,3 @@ def test_generate_per_query_jsons_uses_default_node_when_none_found(
     # Should fall back to node-01
     assert set(data["results"].keys()) == {"node-01"}
     assert data["nodes"]["primary"] == "node-01"
-
-
