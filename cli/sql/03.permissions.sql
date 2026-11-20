@@ -180,6 +180,23 @@ exception when insufficient_privilege then
 end
 $$;
 revoke all on function postgres_ai.pg_statistic_rows() from public;
+-- Default privileges can grant EXECUTE on a new function to any role (#526).
+-- Revoke every grant but the owner's; the grants below are the only ones.
+do {{DO_QUOTE}}
+declare
+  grantee_oid oid;
+begin
+  for grantee_oid in
+    select distinct a.grantee
+    from pg_catalog.pg_proc p
+    cross join lateral pg_catalog.aclexplode(p.proacl) a
+    where p.oid = pg_catalog.to_regprocedure('postgres_ai.pg_statistic_rows()')
+      and a.grantee <> 0 and a.grantee <> p.proowner
+  loop
+    execute pg_catalog.format('revoke all on function postgres_ai.pg_statistic_rows() from %I cascade',
+      pg_catalog.pg_get_userbyid(grantee_oid));
+  end loop;
+end {{DO_QUOTE}};
 grant execute on function postgres_ai.pg_statistic_rows() to {{ROLE_IDENT}};
 
 create or replace view postgres_ai.pg_statistic as
@@ -189,7 +206,9 @@ from postgres_ai.pg_statistic_rows();
 grant select on postgres_ai.pg_statistic to {{ROLE_IDENT}};
 
 -- Roles that a previous prepare-db gave SELECT on the old view (another
--- monitoring role) need EXECUTE now that the view reads the function.
+-- monitoring role) need EXECUTE now that the view reads the function. Every
+-- prepare-db granted pg_monitor with it; other SELECT holders, such as roles
+-- that default privileges gave SELECT on new tables, get no EXECUTE (#526).
 do {{DO_QUOTE}}
 declare
   grantee_oid oid;
@@ -200,6 +219,7 @@ begin
     cross join lateral pg_catalog.aclexplode(c.relacl) a
     where c.oid = pg_catalog.to_regclass('postgres_ai.pg_statistic')
       and a.privilege_type = 'SELECT' and a.grantee <> 0 and a.grantee <> c.relowner
+      and pg_catalog.pg_has_role(a.grantee, 'pg_monitor', 'MEMBER')
   loop
     execute pg_catalog.format('grant execute on function postgres_ai.pg_statistic_rows() to %I',
       pg_catalog.pg_get_userbyid(grantee_oid));

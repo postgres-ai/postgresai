@@ -1165,6 +1165,16 @@ export async function verifyInitSetup(params: {
       if (!viewPrivRes.rows?.[0]?.ok) {
         missingRequired.push("SELECT on view postgres_ai.pg_statistic");
       }
+      // The view reads this function as the caller (#525); older views do not.
+      const fnPrivRes = await params.client.query(`
+        select case
+          when to_regprocedure('postgres_ai.pg_statistic_rows()') is null then true
+          else has_function_privilege($1, 'postgres_ai.pg_statistic_rows()', 'EXECUTE')
+        end as ok
+      `, [role]);
+      if (!fnPrivRes.rows?.[0]?.ok) {
+        missingRequired.push("EXECUTE on function postgres_ai.pg_statistic_rows()");
+      }
     }
 
     const schemaUsageRes = await params.client.query(
@@ -1355,7 +1365,10 @@ export async function checkCurrentUserPermissions(
           when to_regnamespace('postgres_ai') is null then null
           when not has_schema_privilege(current_user, 'postgres_ai', 'USAGE') then null
           when to_regclass('postgres_ai.pg_statistic') is null then null
-          else has_table_privilege(current_user, 'postgres_ai.pg_statistic', 'select')
+          -- The view reads pg_statistic_rows() as the caller (#525).
+          when not has_table_privilege(current_user, 'postgres_ai.pg_statistic', 'select') then false
+          when to_regprocedure('postgres_ai.pg_statistic_rows()') is null then true
+          else has_function_privilege(current_user, 'postgres_ai.pg_statistic_rows()', 'EXECUTE')
         end as granted
     )
     select

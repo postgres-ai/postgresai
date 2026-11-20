@@ -575,8 +575,10 @@ $$`);
     const password = "test-only-mon-525";
     try {
       await admin.connect();
-      // A role that an earlier prepare-db gave SELECT on the old (join) view.
+      // A role that an earlier prepare-db gave SELECT on the old (join) view,
+      // and pg_monitor, as every prepare-db version did.
       await admin.query("create role prev_mon_525 nologin");
+      await admin.query("grant pg_monitor to prev_mon_525");
       await admin.query("create schema postgres_ai");
       await admin.query(`create view postgres_ai.pg_statistic as
         select n.nspname as schemaname, c.relname as tablename, a.attname,
@@ -629,6 +631,182 @@ $$`);
         expect(tables).toContain("owned_t");
         expect(tables).not.toContain("stats_t");
       } finally { await mon.end(); }
+    } finally {
+      await admin.end();
+      await pg.cleanup();
+    }
+  }, { timeout: 60000 });
+
+  test("prepare-db gives EXECUTE on pg_statistic_rows() to monitoring roles only (#526)", async () => {
+    pg = await createTempPostgres();
+    const admin = new Client({ connectionString: pg.adminUri });
+    const probes = ["probe_none_526", "probe_tbl_526", "probe_fn_526"];
+    try {
+      await admin.connect();
+      // An earlier prepare-db's monitoring role, and roles that default
+      // privileges give SELECT on new tables or EXECUTE on new functions.
+      await admin.query("create role prev_mon_526 nologin");
+      await admin.query("grant pg_monitor to prev_mon_526");
+      for (const probe of probes) await admin.query(`create role ${probe} nologin`);
+      await admin.query("alter default privileges for role postgres grant select on tables to probe_tbl_526");
+      await admin.query("alter default privileges for role postgres grant execute on functions to probe_fn_526");
+      await admin.query("create schema postgres_ai");
+      await admin.query(`create view postgres_ai.pg_statistic as
+        select n.nspname as schemaname, c.relname as tablename, a.attname,
+               s.stanullfrac as null_frac, s.stawidth as avg_width, false as inherited
+        from pg_catalog.pg_statistic s
+        join pg_catalog.pg_class c on c.oid = s.starelid
+        join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+        join pg_catalog.pg_attribute a on a.attrelid = s.starelid and a.attnum = s.staattnum
+        where a.attnum > 0 and not a.attisdropped`);
+      await admin.query("grant select on postgres_ai.pg_statistic to prev_mon_526");
+      await admin.query(`grant usage on schema postgres_ai to prev_mon_526, ${probes.join(", ")}`);
+      await admin.query("create table public.secret_t as select g as id, md5(g::text) as note from generate_series(1, 1000) g");
+      await admin.query("analyze public.secret_t");
+
+      const { buildInitPlan, applyInitPlan } = await import("../lib/init");
+      const plan = await buildInitPlan({ database: "testdb", monitoringPassword: "test-only-mon-526", includeOptionalPermissions: false });
+      const sqlstateAs = async (role: string, sql: string): Promise<string> => {
+        await admin.query(`set role ${role}`);
+        try {
+          await admin.query(sql);
+          return "ok";
+        } catch (e) {
+          return String((e as { code?: string }).code);
+        } finally {
+          await admin.query("reset role");
+        }
+      };
+      const check = async (run: string) => {
+        const acl = await admin.query(`
+          select coalesce(array_agg(g order by g), '{}') as grantees from (
+            select case when a.grantee = 0 then 'PUBLIC' else pg_get_userbyid(a.grantee)::text end as g
+            from pg_proc p
+            cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+            where p.oid = 'postgres_ai.pg_statistic_rows()'::regprocedure
+              and a.privilege_type = 'EXECUTE' and a.grantee <> p.proowner) s`);
+        expect({ run, grantees: acl.rows[0].grantees }).toEqual({ run, grantees: ["postgres_ai_mon", "prev_mon_526"] });
+        const fn = await admin.query(
+          "select prosecdef, proconfig from pg_proc where oid = 'postgres_ai.pg_statistic_rows()'::regprocedure");
+        expect(fn.rows[0]).toEqual({ prosecdef: true, proconfig: ["search_path=pg_catalog, pg_temp"] });
+        for (const probe of probes) {
+          expect({ run, probe, view: await sqlstateAs(probe, "select * from postgres_ai.pg_statistic") })
+            .toEqual({ run, probe, view: "42501" });
+          expect({ run, probe, fn: await sqlstateAs(probe, "select * from postgres_ai.pg_statistic_rows()") })
+            .toEqual({ run, probe, fn: "42501" });
+        }
+        expect(await sqlstateAs("prev_mon_526",
+          "select 1 from postgres_ai.pg_statistic where tablename = 'secret_t' limit 1")).toBe("ok");
+      };
+
+      await applyInitPlan({ client: admin, plan });
+      await check("first run");
+      // A re-run removes EXECUTE that an earlier prepare-db (#525) let through.
+      await admin.query(
+        "grant execute on function postgres_ai.pg_statistic_rows() to public, probe_tbl_526, probe_fn_526");
+      await applyInitPlan({ client: admin, plan });
+      await check("re-run");
+    } finally {
+      await admin.end();
+      await pg.cleanup();
+    }
+  }, { timeout: 60000 });
+
+  test("setup checks report a missing EXECUTE on pg_statistic_rows() (#526)", async () => {
+    pg = await createTempPostgres();
+    const admin = new Client({ connectionString: pg.adminUri });
+    const password = "test-only-mon-526v";
+    const mon = new Client({ host: "127.0.0.1", port: pg.port, user: "postgres_ai_mon", database: "testdb", password });
+    try {
+      await admin.connect();
+      const { buildInitPlan, applyInitPlan, verifyInitSetup, checkCurrentUserPermissions } = await import("../lib/init");
+      const { verifyInitSetupViaSupabase } = await import("../lib/supabase");
+      const plan = await buildInitPlan({ database: "testdb", monitoringPassword: password, includeOptionalPermissions: false });
+      const missing = "EXECUTE on function postgres_ai.pg_statistic_rows()";
+      const verify = { database: "testdb", monitoringUser: "postgres_ai_mon", includeOptionalPermissions: false };
+      const supa = { query: (sql: string) => admin.query(sql) } as unknown as SupabaseClient;
+      const statRow = async () => (await checkCurrentUserPermissions(mon)).rows
+        .find((r) => r.permission_name === "select on postgres_ai.pg_statistic");
+
+      // A database prepared before #525: the join view, no function. Nothing
+      // is missing and no check raises.
+      await admin.query(`create role postgres_ai_mon login password '${password}'`);
+      await admin.query("grant pg_monitor to postgres_ai_mon");
+      await admin.query("create schema postgres_ai");
+      await admin.query("grant usage on schema postgres_ai to postgres_ai_mon");
+      await admin.query(`create view postgres_ai.pg_statistic as
+        select n.nspname as schemaname, c.relname as tablename, a.attname,
+               s.stanullfrac as null_frac, s.stawidth as avg_width, false as inherited
+        from pg_catalog.pg_statistic s
+        join pg_catalog.pg_class c on c.oid = s.starelid
+        join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+        join pg_catalog.pg_attribute a on a.attrelid = s.starelid and a.attnum = s.staattnum
+        where a.attnum > 0 and not a.attisdropped`);
+      await admin.query("grant select on postgres_ai.pg_statistic to postgres_ai_mon");
+      await mon.connect();
+      expect((await verifyInitSetup({ client: admin, ...verify })).missingRequired).not.toContain(missing);
+      expect((await verifyInitSetupViaSupabase({ client: supa, ...verify })).missingRequired).not.toContain(missing);
+      expect((await statRow())?.granted).toBe(true);
+
+      await applyInitPlan({ client: admin, plan });
+      expect((await verifyInitSetup({ client: admin, ...verify })).missingRequired).not.toContain(missing);
+      expect((await verifyInitSetupViaSupabase({ client: supa, ...verify })).missingRequired).not.toContain(missing);
+      expect((await statRow())?.granted).toBe(true);
+
+      await admin.query("revoke execute on function postgres_ai.pg_statistic_rows() from postgres_ai_mon");
+      expect((await verifyInitSetup({ client: admin, ...verify })).missingRequired).toContain(missing);
+      expect((await verifyInitSetupViaSupabase({ client: supa, ...verify })).missingRequired).toContain(missing);
+      const row = await statRow();
+      expect(row?.granted).toBe(false);
+      expect(row?.fix_command).toContain("grant execute on function postgres_ai.pg_statistic_rows() to postgres_ai_mon;");
+
+      // The bloat check reports the missing grant rather than empty results.
+      const checkupLib = await import("../lib/checkup");
+      const f004 = await checkupLib.REPORT_GENERATORS.F004(mon, "node");
+      const entry = (f004.results.node.data as Record<string, { status: { reason: string | null } }>).testdb;
+      expect(entry.status.reason).toBe("missing_grant");
+    } finally {
+      await mon.end().catch(() => {});
+      await admin.end();
+      await pg.cleanup();
+    }
+  }, { timeout: 60000 });
+
+  test("unprepare-db drops the platform's public.pg_statistic that reads pg_statistic_rows() (#526)", async () => {
+    pg = await createTempPostgres();
+    const admin = new Client({ connectionString: pg.adminUri });
+    try {
+      await admin.connect();
+      const { buildInitPlan, applyInitPlan, buildUninitPlan, applyUninitPlan } = await import("../lib/init");
+      const plan = await buildInitPlan({ database: "testdb", monitoringPassword: "test-only-mon-526u", includeOptionalPermissions: false });
+      const exists = async (rel: string) =>
+        (await admin.query("select to_regclass($1) is not null as ok", [rel])).rows[0].ok;
+
+      // A customer's own public.pg_statistic, which does not read the function, stays.
+      let result;
+      for (const own of ["create table public.pg_statistic (id int)",
+        // A view that reads another function: pinned built-ins have no pg_depend rows.
+        "create function public.own_stat() returns int language sql as 'select 1'; create view public.pg_statistic as select public.own_stat() as x"]) {
+        await admin.query(own);
+        await applyInitPlan({ client: admin, plan });
+        result = await applyUninitPlan({ client: admin, plan: await buildUninitPlan({ database: "testdb" }) });
+        expect({ own, errors: result.errors }).toEqual({ own, errors: [] });
+        expect({ own, kept: await exists("public.pg_statistic") }).toEqual({ own, kept: true });
+        await admin.query(own.startsWith("create table") ? "drop table public.pg_statistic"
+          : "drop view public.pg_statistic; drop function public.own_stat()");
+      }
+
+      // The view the platform's prepare-db adds over the same function.
+      await applyInitPlan({ client: admin, plan });
+      await admin.query(`create view public.pg_statistic as
+        select schemaname, tablename, attname, null_frac, avg_width, inherited
+        from postgres_ai.pg_statistic_rows()`);
+      result = await applyUninitPlan({ client: admin, plan: await buildUninitPlan({ database: "testdb" }) });
+      expect(result.errors).toEqual([]);
+      expect(await exists("public.pg_statistic")).toBe(false);
+      expect(await exists("postgres_ai.pg_statistic")).toBe(false);
+      expect((await admin.query(
+        "select to_regprocedure('postgres_ai.pg_statistic_rows()') is null as gone")).rows[0].gone).toBe(true);
     } finally {
       await admin.end();
       await pg.cleanup();
