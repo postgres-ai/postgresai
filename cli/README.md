@@ -697,6 +697,9 @@ When writing queries:
   The collector also supplies `real_dbname`; redundant-index metrics use this database label.
 - `information_schema.columns` lists the views and their columns; `metric_dict` lists the
   metrics.
+- `objects` is a snapshot of definitions every `collector.objects_interval_s` (600 s by
+  default): `valid_from` and `valid_to` are snapshot times, and an object that existed for
+  less than that may be missing.
 - `logs`, `plans` and `plan_events` are empty unless Postgres logs are collected.
 
 `--local` and the platform path print the result as a text table with the row count under
