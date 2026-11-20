@@ -48,6 +48,10 @@
 
 ### Changed
 
+- `pgai mon deploy`, `pgai mon instances list` / `watch` (`status`) and the MCP `deploy_monitoring` tool link to the
+  project's Database health, the console's default project view (`<console>/<org>/projects/<project>/health-preview`),
+  instead of its Health Matrix (https://gitlab.com/postgres-ai/postgresai/-/work_items/522). `health_url` keeps its
+  name; the terminal label is now `Database health:`.
 - A publicly accessible RDS is monitored directly (as `--provider generic`), not handed off to the console. There the
   RDS master user (a member of `rds_superuser`) counts as an admin before `pg_stat_statements` is installed, as it can
   create it.

@@ -293,7 +293,7 @@ docker-compose service name, or a private address (`10.*`, `172.16-31.*`,
 `192.168.*`), tell the user PostgresAI Cloud cannot reach it, and offer
 `--self-hosted` (Docker on this machine) instead. A self-hosted deploy returns
 `ready` with Grafana at `dashboard_url` (`http://localhost:3000`) but no
-Health Matrix: give the user the Grafana link.
+Database health link: give the user the Grafana link.
 
 ## 2–3. The price and the payment method
 
@@ -576,7 +576,7 @@ and does not say which database each one is for. Report those with
 If this database was monitored before, older open issues may be its own too:
 PostgresAI reuses an open issue instead of opening a second one. The first
 report sees less than an hour of data and can be nearly empty: say so if it
-is. Then report as below, worst first, with the Health Matrix link
+is. Then report as below, worst first, with the Database health link
 (`health_url`).
 
 The detailed reports and recommendations, based on the monitoring data
@@ -603,7 +603,7 @@ Once findings are in, tell the user, in plain words, worst first:
 
 Group minor items at the end, then list the issues PostgresAI opened. If you
 deployed without `--vcpus`, say again that AAS needs the vCPU count. Say what
-the monitoring setup created, and give the Health Matrix link (`health_url`)
+the monitoring setup created, and give the Database health link (`health_url`)
 and the dashboard link (`dashboard_url`), whichever the deploy returned.
 Say when the detailed reports and recommendations will be ready (about 24
 hours after the deploy), what they add, and that you can go through them

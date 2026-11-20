@@ -11,8 +11,8 @@ const CH = "postgresql://postgres:adminpw@abc123.us-east-1.aws.pg.clickhouse.clo
 const NAME = "abc123.us-east-1.aws.pg.clickhouse.cloud/postgres";
 const ROW = { id: "i-1", name: NAME, provider: "clickhouse", mode: "cloud", status: "active", dashboard_url: "https://abc.pgai.watch", host_metrics: true, created_at: "2026-09-30T00:00:00Z" };
 
-// What mon deploy, status and list show: the Health Matrix first, then Grafana through the PostgresAI sign-in.
-const HEALTH = "https://console.example/acme/projects/abc-db/health";
+// What mon deploy, status and list show: Database health first, then Grafana through the PostgresAI sign-in.
+const HEALTH = "https://console.example/acme/projects/abc-db/health-preview";
 const GRAFANA = "https://abc.pgai.watch/login/generic_oauth?redirectTo=%2F";
 const LOOKUPS = ["/rpc/orgs_list test-key {}", "/rpc/projects_list test-key {}"];
 
@@ -110,8 +110,8 @@ describe("pgai init", () => {
         URL_PROMPT,
         KEY_PROMPT,
         `Monitoring for ${NAME} is ready.`,
-        `  Health Matrix: ${HEALTH}`,
-        `  Grafana:       ${GRAFANA}`,
+        `  Database health: ${HEALTH}`,
+        `  Grafana:         ${GRAFANA}`,
         "",
       ].join("\n"));
       expect(calls).toEqual(["/rpc/cloud_monitoring_list test-key {}", ...LOOKUPS]);
@@ -123,7 +123,7 @@ describe("pgai init", () => {
     await withApi(async (env) => {
       const r = await runTty(["init"], env, [[URL_PROMPT, `${url}\r`]]);
       expect(r.status).toBe(0);
-      expect(r.screen).toStartWith(`${URL_PROMPT}\nMonitoring for db.example.com/app is ready.\n  Health Matrix: ${HEALTH}\n`);
+      expect(r.screen).toStartWith(`${URL_PROMPT}\nMonitoring for db.example.com/app is ready.\n  Database health: ${HEALTH}\n`);
       // The URL carries the admin password: it is not shown as typed.
       expect(r.screen).not.toContain(":pw@");
       expect(r.screen).not.toContain("ClickHouse");
