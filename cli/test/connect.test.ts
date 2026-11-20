@@ -1375,13 +1375,13 @@ describe("mon deploy", () => {
 
   test("at a terminal the result is a few sentences, the links whole, not a dump of fields", () => {
     const ready = { status: "ready" as const, provider: "self-managed" as const, name: "db.example.com/app", id: "i-1",
-      health_url: "https://console.example/acme/projects/app/health", dashboard_url: "https://abc.pgai.watch/login/generic_oauth?redirectTo=%2F",
-      host_metrics: false, price: "$512.00/month per database cluster (scale plan)", next: "Open https://console.example/acme/projects/app/health" };
+      health_url: "https://console.example/acme/projects/app/health-preview", dashboard_url: "https://abc.pgai.watch/login/generic_oauth?redirectTo=%2F",
+      host_metrics: false, price: "$512.00/month per database cluster (scale plan)", next: "Open https://console.example/acme/projects/app/health-preview" };
     expect(resultLines(ready)).toEqual([
       "Monitoring for db.example.com/app is ready.",
-      "  Health Matrix: https://console.example/acme/projects/app/health",
-      "  Grafana:       https://abc.pgai.watch/login/generic_oauth?redirectTo=%2F",
-      "  Price:         $512.00/month per database cluster (scale plan)",
+      "  Database health: https://console.example/acme/projects/app/health-preview",
+      "  Grafana:         https://abc.pgai.watch/login/generic_oauth?redirectTo=%2F",
+      "  Price:           $512.00/month per database cluster (scale plan)",
     ]);
     expect(resultLines({ status: "in_progress", provider: "self-managed", name: "db.example.com/app", id: "i-1", next: "pgai mon instances watch i-1" }))
       .toEqual(["Monitoring for db.example.com/app is still being set up. Follow it: pgai mon instances watch i-1"]);
@@ -3101,12 +3101,12 @@ describe("MCP deploy_monitoring", () => {
     const call = async (args: Record<string, unknown>) =>
       JSON.parse((await handleToolCall({ params: { name: "deploy_monitoring", arguments: args } }, opts)).content[0].text);
     try {
-      // The Health Matrix first; Grafana through the PostgresAI sign-in.
+      // Database health first; Grafana through the PostgresAI sign-in.
       expect(await call({ database_url: CH })).toEqual({
         status: "ready", provider: "clickhouse", name: CH_NAME, id: "i-1",
-        health_url: "https://console.example/acme/projects/abc-db/health",
+        health_url: "https://console.example/acme/projects/abc-db/health-preview",
         dashboard_url: "https://abc.pgai.watch/login/generic_oauth?redirectTo=%2F", host_metrics: true,
-        next: "Open https://console.example/acme/projects/abc-db/health",
+        next: "Open https://console.example/acme/projects/abc-db/health-preview",
       });
       // The PrivateLink arguments reach deploy: one for PrivateLink only is refused on the direct path.
       expect((await call({ database_url: "postgresql://u:p@db.abc.us-east-1.rds.amazonaws.com:5432/app", privatelink: false, host_stats: true })).next)

@@ -4761,7 +4761,7 @@ const mon = program.command("mon").description("monitoring services management")
 sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (default: host[:port]/database)",
   "the box's region on its cloud (default: the database's region when that cloud has it; see below)",
   "where the monitoring box runs: aws or hetzner (default: the database's cloud, else aws)")
-  .description("deploy PostgresAI Cloud monitoring for a database: prepare it, provision the monitoring box, print its Health Matrix and dashboard")
+  .description("deploy PostgresAI Cloud monitoring for a database: prepare it, provision the monitoring box, print its Database health and dashboard")
   .option("--provider <provider>", "generic (direct PostgreSQL URL; alias: self-managed) | clickhouse | rds | supabase (default: detected from the host)")
   .option("--clickhouse-key <id:secret>", "ClickHouse Cloud API key (Basic Service API Reader) for CPU, memory and disk; or CLICKHOUSE_KEY_ID + CLICKHOUSE_KEY_SECRET")
   .option("--self-hosted", "run the monitoring stack on this machine (mon local-install) instead of PostgresAI Cloud")
@@ -4784,7 +4784,7 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
     "",
     "Steps (each skipped when already done; safe to re-run): sign in, prepare the database",
     "(an admin URL creates the postgres_ai_mon role; otherwise the SQL is printed), provision",
-    "the monitoring box, wait, print the Health Matrix (health_url) and Grafana, signed in with",
+    "the monitoring box, wait, print Database health (health_url) and Grafana, signed in with",
     "your PostgresAI account (dashboard_url). The box runs its first checkup at first_checkup_eta",
     "at the earliest (3 minutes after it is ready), once every target has data (at most 30 minutes).",
     "",
@@ -4909,7 +4909,7 @@ async function cloudInstance(opts: { debug?: boolean }, ref: string, live = fals
   return pickInstance(rows, ref, (d) => d.id, (d) => d.name, "pgai mon instances list");
 }
 
-/** The org's monitoring instances with their console links (Health Matrix, Grafana sign-in), and a PrivateLink box's route. */
+/** The org's monitoring instances with their console links (Database health, Grafana sign-in), and a PrivateLink box's route. */
 async function linkedDatabases(opts: { debug?: boolean }) {
   const api = cloudApi(opts.debug);
   return Promise.all((await api.list()).map(async (d) => {
@@ -5038,7 +5038,7 @@ withOrgOptions(monInstances.command("set <id-or-name>"))
         ? `${row.name} already has ${vcpus} vCPUs: nothing changed`
         : r.aas_status === "no_labels"
           ? "AAS (database load) is collected once the monitoring box has registered"
-          : "AAS (database load) is collected from the next minute; the Health Matrix fills in as data arrives";
+          : "AAS (database load) is collected from the next minute; Database health fills in as data arrives";
       const result = { status: monitoringStatus(row.status), name: row.name, id: row.id, vcpus: r.vcpus, previous_vcpus: r.previous_vcpus, changed: r.changed, next };
       if (json) printResult(result, true);
       else console.log(`${row.name}: ${r.vcpus} vCPUs${r.changed ? ` (was ${r.previous_vcpus ?? "not set"})` : ""}. ${next}.`);

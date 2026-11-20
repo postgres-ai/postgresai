@@ -61,7 +61,7 @@ describe("allow_ip (platform-all#987)", () => {
     expect(creates(calls)).toEqual([{ db_url: URL, allow_ip_fallback: true }]);
     expect(r.status).toBe("ready");
     expect(r.egress_ip).toBe("203.0.113.5");
-    expect(resultLines(r)).toContain("  Connects from: 203.0.113.5");
+    expect(resultLines(r)).toContain("  Connects from:   203.0.113.5");
   });
 
   test("an agent: the reserved IP comes back as step allow_ip (exit 3), nothing else is created", async () => {

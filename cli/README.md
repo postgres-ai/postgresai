@@ -196,8 +196,8 @@ pgai mon deploy 'postgresql://postgres:<password>@<host>:5432/postgres'
 ```
 
 It signs you in if needed, creates the `postgres_ai_mon` role (with an admin URL; otherwise it
-prints the SQL), provisions monitoring in PostgresAI Cloud, waits, and prints two links: the project's Health Matrix in the console
-(`<console>/<org>/projects/<project>/health`, the next step) and Grafana, which signs you in
+prints the SQL), provisions monitoring in PostgresAI Cloud, waits, and prints two links: the project's Database health in the console
+(`<console>/<org>/projects/<project>/health-preview`, the next step) and Grafana, which signs you in
 with your PostgresAI account (`https://<box>/login/generic_oauth?redirectTo=%2F`). Safe to re-run; a `--clickhouse-key` given on a
 re-run is checked, and a rejected one is `action_required`. For ClickHouse Managed Postgres add `--clickhouse-key <key-id>:<key-secret>`
 (a Basic Service API Reader key) for CPU, memory and disk. `--self-hosted` runs the stack on this
