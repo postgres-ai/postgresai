@@ -2550,7 +2550,7 @@ async function openConnection(url: string, opts: PrepareOptions) {
 }
 
 /** Drops the monitoring role and what it was granted in this database; false when the server refuses. */
-async function dropMonitoringRole(client: PgClient, role: string): Promise<boolean> {
+export async function dropMonitoringRole(client: { query: (sql: string) => Promise<unknown> }, role: string): Promise<boolean> {
   const q = quoteIdent(role);
   // Alone first: a role with no grants yet needs no DROP OWNED, which a CREATEROLE admin may not run.
   for (const sql of [`drop role ${q}`, `drop owned by ${q}; drop role ${q}`]) {

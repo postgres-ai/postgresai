@@ -92,6 +92,27 @@
 
 ### Fixed
 
+- First-install fixes (https://gitlab.com/postgres-ai/postgresai/-/work_items/529):
+  - `checkup --no-upload` no longer needs an organization when a global token is stored.
+  - Re-running `prepare-db` without a monitoring password keeps an existing role's password; only `--reset-password`
+    or an explicit `--password` / `PGAI_MON_PASSWORD` changes it. `--json` output has `passwordChanged`.
+  - **Breaking:** a generated monitoring password is no longer in non-TTY `--json` output unless `--print-password`;
+    without it the run fails (exit 1, JSON error) before any change, as the text mode does. Scripts that read
+    `generatedPassword` from a piped `prepare-db --json` must pass `--print-password` or give a password.
+  - When `prepare-db` creates the role with a generated password and a later step fails, it drops the role again,
+    so a re-run starts clean; if the drop fails, the JSON error carries `generatedPassword` and `passwordChanged`.
+    The role step fails instead of creating or adopting a role that appeared or disappeared during the run.
+  - `prepare-db <url> --print-sql` works without a monitoring password in non-TTY runs (the password is redacted).
+  - A missing admin password fails at once with a clear message, not after ~60 s with a SASL error.
+  - `checkup --json` prints `{"success": false, "error": {...}}` on stdout when the output directory, API key,
+    connection, permissions, check ID or upload fails before any report; exit codes are in `checkup --help` and the
+    README.
+  - `checkup --help` shows titles for F009 and I001.
+  - F003 no longer calls a table past its insert trigger "append-only", and says "being worked" only when an
+    autovacuum worker is busy and no flagged table has autovacuum disabled. H002's summary notes usage stats younger
+    than 7 days (since a stats reset or the server start). D004's summary counts the settings in the report
+    ("N settings collected").
+
 - `postgres_ai.table_describe` no longer lists every NOT NULL column a second time under Constraints on PostgreSQL 18
   (as `n:` lines); Columns already shows `NOT NULL`, so the output now matches earlier versions
   (https://gitlab.com/postgres-ai/postgresai/-/work_items/517). An existing install changes when `prepare-db` runs again.
