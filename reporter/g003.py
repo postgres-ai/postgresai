@@ -342,13 +342,51 @@ def _epoch(item: Dict[str, Any]) -> Optional[float]:
 _PAIR_LABELS = ("blocked_query_id", "blocked_user", "blocked_table", "blocker_query_id", "blocker_user", "blocker_table")
 
 
+def _series(item: Dict[str, Any]) -> Tuple[Tuple[str, str], ...]:
+    """A series' label set; max_over_time keeps the metric name and tmax_over_time drops it."""
+    return tuple(sorted((k, v) for k, v in (item.get("metric") or {}).items() if k != "__name__"))
+
+
+def combine_days(longest_days: Sequence[Sequence[Dict[str, Any]]],
+                 at_days: Optional[Sequence[Sequence[Dict[str, Any]]]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """One max_over_time and one tmax_over_time over the window, from the answers for its
+    disjoint days (#530: one 7-day query can pass pgai-mon's memory cap).
+
+    Per series: the largest daily maximum, and its time. On a tie the latest time wins, as
+    one tmax_over_time returns the LAST timestamp of the maximum (pgai-mon: arg_max(ts, (v, ts)),
+    reporter/promsql.py; VictoriaMetrics: rollupTmax's `v >= maxValue`). at_days None (a tmax
+    query failed) gives no times, as before. Sorted by label set, as pgai-mon answers."""
+    best: Dict[Tuple[Tuple[str, str], ...], Tuple[float, Dict[str, Any], List[int]]] = {}
+    for day, rows in enumerate(longest_days):
+        for item in rows or []:
+            value = _epoch(item)
+            if value is None or value != value:
+                continue
+            key = _series(item)
+            held = best.get(key)
+            if held is None or value > held[0]:
+                best[key] = (value, item, [day])
+            elif value == held[0]:
+                held[2].append(day)
+    longest = [best[key][1] for key in sorted(best)]
+    if at_days is None:
+        return longest, []
+    times = [{_series(item): item for item in rows or [] if _epoch(item) is not None} for rows in at_days]
+    at = []
+    for key in sorted(best):
+        tied = [times[day][key] for day in best[key][2] if day < len(times) and key in times[day]]
+        if tied:
+            at.append(max(tied, key=_epoch))
+    return longest, at
+
+
 def lock_waits(longest: Sequence[Dict[str, Any]], at: Sequence[Dict[str, Any]], *, window: Dict[str, Any],
                query_text: Optional[Callable[[str], Optional[str]]] = None) -> Dict[str, Any]:
     """Who blocked whom over the window, from one max_over_time and one tmax_over_time
-    per series of the lock-wait metric. A series is one pair of sessions and statements;
-    its value is the blocked statement's age at the sample, not the length of the wait."""
-    labels = lambda item: tuple(sorted((k, v) for k, v in (item.get("metric") or {}).items() if k != "__name__"))
-    times = {labels(item): _epoch(item) for item in at or []}
+    per series of the lock-wait metric (combine_days builds them from per-day answers).
+    A series is one pair of sessions and statements; its value is the blocked statement's
+    age at the sample, not the length of the wait."""
+    times = {_series(item): _epoch(item) for item in at or []}
     pairs: Dict[Tuple[str, ...], Dict[str, Any]] = {}
     for item in longest or []:
         metric = item.get("metric") or {}
@@ -359,7 +397,7 @@ def lock_waits(longest: Sequence[Dict[str, Any]], at: Sequence[Dict[str, Any]], 
         pair = pairs.setdefault(key, {"sessions": 0, "longest_ms": -1.0, "longest_at": None})
         pair["sessions"] += 1
         if age > pair["longest_ms"]:
-            pair["longest_ms"], pair["longest_at"] = age, times.get(labels(item))
+            pair["longest_ms"], pair["longest_at"] = age, times.get(_series(item))
     rows = []
     for key, pair in sorted(pairs.items(), key=lambda kv: (-kv[1]["longest_ms"], kv[0]))[:MAX_LOCK_PAIRS]:
         fields = dict(zip(_PAIR_LABELS, key))

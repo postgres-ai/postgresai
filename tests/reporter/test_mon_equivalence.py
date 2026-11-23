@@ -84,9 +84,9 @@ def test_every_cassette_query_matches_victoriametrics(mon, cassette):
         if d:
             diffs[e["query"]] = d[:3]
     assert not diffs, f"{len(diffs)} of {len(cassette)} queries differ: {list(diffs.items())[:5]}"
-    # the fixture must keep exercising the queries (an empty store would match trivially); 499
-    # recorded, 427 non-empty since the per-query files batch their statements (#524)
-    assert len(cassette) >= 480 and nonempty >= 400, (len(cassette), nonempty)
+    # the fixture must keep exercising the queries (an empty store would match trivially); 511
+    # recorded, 431 non-empty since G003 asks for lock waits per day (#530; 499 and 427 before)
+    assert len(cassette) >= 490 and nonempty >= 410, (len(cassette), nonempty)
 
 
 def test_range_errors_are_not_silent(mon):
@@ -148,6 +148,59 @@ def test_batched_per_query_metrics_equal_per_statement_queries(mon, reports, chu
     # the fixture must keep exercising it: 24 statement x node x database combinations with
     # metrics in the fixture
     assert compared >= 20, compared
+
+
+def _lock_wait_instants():
+    """Instants where a synthetic lock-wait episode crosses a day boundary of G003's per-day
+    queries ((t - (n+1)d, t - nd]) with a reading exactly on it, or crosses the 7-day edge."""
+    import gzip
+    import json
+    with gzip.open(eq.FIXTURE / "synthetic.jsonl.gz", "rt") as f:
+        episodes = [json.loads(x) for x in f if '"pgwatch_lock_waits_blocked_ms"' in x]
+    assert len(episodes) == 3, len(episodes)
+    day, out, starts = 86400, [FIXTURE_AT], []
+    for e in episodes:
+        ts = [t // 1000 for t, v in zip(e["timestamps"], e["values"]) if v is not None]
+        top = ts[e["values"].index(max(v for v in e["values"] if v is not None))]
+        out += [ts[len(ts) // 2] + day, top + day, ts[len(ts) // 2] + 7 * day]
+        starts.append(ts[0])
+    out.append(max(starts) + 3 * day)  # the latest episode's start on the 3rd/4th day boundary
+    return out
+
+
+@pytest.mark.parametrize("at", _lock_wait_instants())
+def test_per_day_lock_waits_equal_one_7_day_query(mon, reports, at):
+    """#530: on pgai-mon, G003's lock waits from 7 one-day queries equal one 7-day query (the
+    fixture fits in pgai-mon's memory), series by series and in the report."""
+    from reporter import g003
+    _, new, _ = reports
+    gen = eq.make_generator(mon_url=mon.url)
+    days = {"max_over_time": [], "tmax_over_time": []}
+    plain = gen.query_instant
+
+    def recording(query):
+        result = plain(query)
+        fn = query.split("(", 1)[0]
+        if "pgwatch_lock_waits_blocked_ms" in query and fn in days:
+            assert result.get("status") == "success", (query, result)
+            days[fn].append(result["data"]["result"])
+        return result
+
+    gen.query_instant = recording
+    with eq.frozen(at):
+        data = gen.generate_g003_timeouts_report(new["A003"], "local", "node-01")["results"]["node-01"]["data"]
+        sel = 'pgwatch_lock_waits_blocked_ms{cluster="local", node_name="node-01"}[7d]'
+        one_max = plain(f"max_over_time({sel})")["data"]["result"]
+        one_at = plain(f"tmax_over_time({sel})")["data"]["result"]
+        texts = {}
+        for queries in gen.get_queryid_queries_from_sink(cluster="local", node_name="node-01").values():
+            texts.update(queries)
+    assert [len(d) for d in days.values()] == [gen.G003_WINDOW_DAYS] * 2
+    longest, times = g003.combine_days(days["max_over_time"], days["tmax_over_time"])
+    assert longest == one_max and times == one_at
+    assert data["lock_waits"] == g003.lock_waits(one_max, one_at, window=data["deadlock_window"], query_text=texts.get)
+    if at == FIXTURE_AT:
+        assert len(longest) == 3 and sum(map(bool, days["max_over_time"])) == 3
 
 
 def test_reports_have_content(reports):
