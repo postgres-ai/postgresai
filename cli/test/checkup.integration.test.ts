@@ -947,6 +947,10 @@ describe.skipIf(!!skipReason)("checkup integration: express mode schema compatib
       expect(table.exceeds_dead_tuple_thresholds).toBe(false);
       expect(table.autovacuum_disabled_flagged).toBe(true);
       expect(dbData.autovacuum_disabled_count).toBeGreaterThanOrEqual(1);
+      // #529: a queued table with autovacuum off is not "being worked".
+      expect(table.over_vacuum_trigger).toBe(true);
+      expect(dbData.autovacuum_keepup.judgment).toContain("with autovacuum disabled (autovacuum does not process them)");
+      expect(dbData.autovacuum_keepup.judgment).not.toContain("being worked");
       expect(
         dbData.conclusions.some((c: string) => c.includes("f003_dead_tuples_test"))
       ).toBe(true);
@@ -1213,7 +1217,9 @@ describe.skipIf(!!skipReason)("checkup integration: express mode schema compatib
     validateAgainstSchema(payload.H002, "H002");
   });
 
-  test("checkup with an unknown check ID exits non-zero and writes no JSON to stdout", () => {
+  // #529: with --json, a failure is a JSON error envelope on stdout (an agent
+  // parses stdout), still with a non-zero exit code.
+  test("checkup with an unknown check ID exits non-zero and prints a JSON error", () => {
     ensurePrepared();
     const { code, stdout } = runCli(
       ["checkup", monConn(), "--check-id", "Z999", "--no-upload", "--json"],
@@ -1221,7 +1227,9 @@ describe.skipIf(!!skipReason)("checkup integration: express mode schema compatib
     );
 
     expect(code).not.toBe(0);
-    expect(stdout.trim()).toBe("");
+    const payload = JSON.parse(stdout);
+    expect(payload.success).toBe(false);
+    expect(payload.error.message).toContain("Z999");
   });
 
   // platform-all#1108: A005 reads every database that accepts connections over

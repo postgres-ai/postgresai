@@ -10,7 +10,7 @@ import * as path from "path";
 import * as net from "net";
 import { Client } from "pg";
 import { prepareDatabase } from "../lib/connect";
-import { buildInitPlan, buildUninitPlan } from "../lib/init";
+import { applyInitPlan, buildInitPlan, buildUninitPlan } from "../lib/init";
 import { applyInitPlanViaSupabase, type SupabaseClient } from "../lib/supabase";
 
 const TEST_TIMEOUT = 30000; // 30 seconds
@@ -1745,6 +1745,60 @@ $$`);
       expect(r.rows[0]).toEqual({ monitor: true, stats: true });
     } finally {
       await supa.end().catch(() => {});
+      await admin.end().catch(() => {});
+      await pg.cleanup();
+    }
+  }, { timeout: 60000 });
+
+  // #529: a re-run without a password keeps the role's password; the role step
+  // fails when the role appeared or disappeared after prepare-db checked it.
+  test("re-run without a password keeps the password; the role step checks what prepare-db saw", async () => {
+    pg = await createTempPostgres();
+    const admin = new Client({ connectionString: pg.adminUri });
+    const canLogin = async (password: string): Promise<boolean> => {
+      const mon = new Client({ host: "127.0.0.1", port: pg.port, database: "testdb", user: "postgres_ai_mon", password });
+      try {
+        await mon.connect();
+        return true;
+      } catch {
+        return false;
+      } finally {
+        await mon.end().catch(() => {});
+      }
+    };
+    const verifier = async (): Promise<string | null> =>
+      (await admin.query("select rolpassword from pg_authid where rolname = 'postgres_ai_mon'")).rows[0]?.rolpassword ?? null;
+    const roleStep = async (roleExpectation: "new" | "exists") => {
+      const plan = await buildInitPlan({
+        database: "testdb", monitoringPassword: "test-only-other", includeOptionalPermissions: false,
+        keepExistingPassword: roleExpectation === "exists", roleExpectation,
+      });
+      return { ...plan, steps: plan.steps.filter((s) => s.name === "01.role") };
+    };
+    try {
+      await admin.connect();
+      const first = runCliInit([pg.adminUri, "--password", "test-only-p1", "--skip-optional-permissions"], { PGAI_MON_PASSWORD: "" });
+      expect(first.status).toBe(0);
+      expect(await canLogin("test-only-p1")).toBe(true);
+
+      // Non-TTY re-run with no password: success, and p1 still logs in.
+      const again = runCliInit([pg.adminUri, "--skip-optional-permissions"], { PGAI_MON_PASSWORD: "" });
+      expect(again.status).toBe(0);
+      expect(again.stdout + again.stderr).toMatch(/kept as is/);
+      expect(await canLogin("test-only-p1")).toBe(true);
+
+      // A "new" plan meets an existing role (another session created it): error, password unchanged.
+      const before = await verifier();
+      await expect(applyInitPlan({ client: admin, plan: await roleStep("new") })).rejects.toThrow(/created by another session/);
+      expect((await verifier()) === before).toBe(true);
+      expect(await canLogin("test-only-p1")).toBe(true);
+
+      // An "exists" plan after the role was dropped: error, no role created.
+      await admin.query("drop owned by postgres_ai_mon; drop role postgres_ai_mon");
+      await expect(applyInitPlan({ client: admin, plan: await roleStep("exists") })).rejects.toThrow(/was dropped during prepare-db/);
+      const roles = await admin.query("select count(*)::int as n from pg_roles where rolname = 'postgres_ai_mon'");
+      expect(roles.rows[0].n).toBe(0);
+    } finally {
       await admin.end().catch(() => {});
       await pg.cleanup();
     }

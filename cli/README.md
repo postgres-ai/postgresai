@@ -74,11 +74,15 @@ npx postgresai prepare-db -h host -p 5432 -U admin -d dbname
 Password input options (in priority order):
 - `--password <password>`
 - `PGAI_MON_PASSWORD` environment variable
-- if not provided: a strong password is generated automatically
+- if not provided: a new role gets a strong generated password; an existing role keeps its password (re-running `prepare-db` is safe). To set a new password on an existing role, pass `--reset-password` (with `--password`/`PGAI_MON_PASSWORD`, or without to generate one).
+
+`--json` output has `passwordChanged`: whether this run set the role's password.
+
+If `prepare-db` creates the role with a generated password and a later step fails, it drops the role again, so a re-run starts clean (if the drop fails, the `--json` error carries `generatedPassword`). If the role appears or disappears while `prepare-db` runs, the role step fails: re-run it.
 
 Monitoring passwords must use printable ASCII characters; non-ASCII passwords are rejected until SASLprep normalization is supported. Role creation and password resets send a SCRAM-SHA-256 verifier instead of the cleartext password, including when the server uses `password_encryption=md5`. Printed SQL redacts the verifier as well. Server statement logging can still record the verifier; treat it as sensitive.
 
-By default, the generated password is printed **only in interactive (TTY) mode**. In non-interactive mode, you must either provide the password explicitly, or opt-in to printing it:
+By default, the generated password is printed **only in interactive (TTY) mode**, with `--json` too (`generatedPassword`). In non-interactive mode, you must either provide the password explicitly, or opt-in to printing it:
 - `--print-password` (dangerous in CI logs)
 
 Optional permissions (RDS/self-managed extras from the root `README.md`) are enabled by default. To skip them:
@@ -89,7 +93,7 @@ npx postgresai prepare-db postgresql://admin@host:5432/dbname --skip-optional-pe
 
 ### Print SQL / dry run
 
-To see what SQL would be executed (passwords redacted by default):
+To see what SQL would be executed (passwords redacted by default; no monitoring password is needed):
 
 ```bash
 npx postgresai prepare-db postgresql://admin@host:5432/dbname --print-sql
@@ -939,12 +943,22 @@ PGPASSWORD=... postgresai checkup \
 - **stderr** carries only human-readable diagnostics (progress, warnings,
   errors). It never contains report JSON — machine consumers should read stdout
   only. Do not parse stderr of `checkup` as JSON (that of `pgai mon deploy` is JSON lines, see above).
-- **Exit codes**: `0` on success; non-zero when the run fails (connection
-  failure, insufficient permissions, an unknown/unavailable check ID, or a
-  failing check). On a non-zero exit, no JSON report object is written to
-  stdout.
+- **Exit codes** (also in `postgresai checkup --help`):
+  - `0`: all checks completed. Findings (warnings) do not change the exit code.
+  - `1`: error: bad arguments, connection failure, insufficient permissions,
+    an unknown/unavailable check ID, an upload failure, or some checks failed.
+- **stdout on exit `1`**: when some checks failed, stdout still holds the report
+  object of the checks that completed (partial results). When the output
+  directory, API key, connection, permissions, check ID or upload fails before
+  any report, stdout holds one error object instead (argument errors and a
+  missing `--org` print to stderr only, with stdout empty):
+
+  ```json
+  { "success": false, "error": { "message": "..." } }
+  ```
 - Pass `--no-upload` to keep the run fully local (no network calls to the
-  PostgresAI API and no API key required).
+  PostgresAI API, no API key and no organization required, even with a stored
+  global token).
 
 ### Passing credentials
 

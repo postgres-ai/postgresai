@@ -159,8 +159,38 @@ function summarizeH002(nodeData: any): CheckSummary {
 
   return {
     status: 'warning',
-    message: `Found ${totalCount} unused index${totalCount > 1 ? 'es' : ''} (${formatBytes(totalSize)})`
+    message: `Found ${totalCount} unused index${totalCount > 1 ? 'es' : ''} (${formatBytes(totalSize)})` +
+      h002RecentStatsNote(data)
   };
+}
+
+/** Usage stats younger than this get a note in the H002 summary (#529). */
+const H002_RECENT_STATS_SECONDS = 7 * 86400;
+
+/**
+ * A note when the index usage stats may be recent: the newer of the stats reset
+ * and the server start is under H002_RECENT_STATS_SECONDS ago. An index can look
+ * unused only because its workload has not run since then. The server start is a
+ * bound only: stats survive a clean restart, hence "may".
+ */
+function h002RecentStatsNote(data: Record<string, any>): string {
+  let resetEpoch = 0;
+  let startEpoch = 0;
+  for (const dbEntry of Object.values(data)) {
+    const s = (dbEntry as any)?.stats_reset;
+    if (!s) continue;
+    resetEpoch = Math.max(resetEpoch, Number(s.stats_reset_epoch) || 0);
+    startEpoch = Math.max(startEpoch, Number(s.postmaster_startup_epoch) || 0);
+  }
+  const since = Math.max(resetEpoch, startEpoch);
+  if (since <= 0) return '';
+  const age = Math.max(0, Date.now() / 1000 - since);
+  if (age >= H002_RECENT_STATS_SECONDS) return '';
+  const span = age < 3600 ? `${Math.max(1, Math.round(age / 60))} min`
+    : age < 86400 ? `${Math.round(age / 3600)} h`
+    : `${Math.round(age / 86400)} d`;
+  const cause = resetEpoch >= startEpoch ? 'stats reset' : 'server start';
+  return `; note: usage stats may cover only ${span} (since ${cause}), so some indexes may look unused`;
 }
 
 function summarizeH004(nodeData: any): CheckSummary {
@@ -239,15 +269,19 @@ function summarizeD001(nodeData: any): CheckSummary {
 
 function summarizeD004(nodeData: any): CheckSummary {
   const data = nodeData?.data || {};
-  const settingsCount = Object.keys(data).length;
+  // The report keeps the settings under data.settings, next to the extension
+  // status objects; count those settings, not the keys of data (#529).
+  const settings = data.settings && typeof data.settings === 'object' ? data.settings : data;
+  const settingsCount = Object.keys(settings).length;
 
   if (settingsCount === 0) {
-    return { status: 'info', message: 'No pg_stat_statements settings found' };
+    return { status: 'info', message: 'No settings found' };
   }
 
   return {
     status: 'info',
-    message: `${settingsCount} pg_stat_statements setting${settingsCount > 1 ? 's' : ''} collected`
+    // Not "pg_stat_statements settings": pg_stat_kcache ones are counted too (#529).
+    message: `${settingsCount} setting${settingsCount > 1 ? 's' : ''} collected`
   };
 }
 
@@ -317,6 +351,9 @@ function summarizeF003(nodeData: any): CheckSummary {
   let disabledCount = 0;
   // WI #271 keeping-up signals aggregated across databases.
   let queueLength = 0;
+  // null: an older report without the worker count.
+  let activeWorkers: number | null = null;
+  let workersUnknown = false;
   let saturated = false;
   let chronic = false;
   let antiWraparound = false;
@@ -334,6 +371,12 @@ function summarizeF003(nodeData: any): CheckSummary {
     disabledCount += dbEntry.autovacuum_disabled_flagged_count || 0;
     const keepup = dbEntry.autovacuum_keepup;
     if (keepup) {
+      // Worker counts are cluster-wide: the same in every database entry.
+      if (typeof keepup.active_workers === 'number') {
+        activeWorkers = Math.max(activeWorkers ?? 0, keepup.active_workers);
+      }
+      // max_workers null: the worker snapshot could not be read.
+      if (keepup.max_workers === null) workersUnknown = true;
       // queue_length is per-database (tables in that DB), so summing is correct.
       queueLength += keepup.queue_length || 0;
       saturated = saturated || Boolean(keepup.saturated);
@@ -376,15 +419,22 @@ function summarizeF003(nodeData: any): CheckSummary {
     parts.unshift('anti-wraparound autovacuum running (see F002)');
   }
 
+  // "Being worked" only when a worker is busy and no flagged table has
+  // autovacuum disabled (autovacuum never processes such a table) (#529).
+  // A failed worker snapshot reads as 0 busy workers: say neither (#529).
+  const beingWorked = activeWorkers !== 0 && disabledCount === 0;
+  const noWorkerBusy = activeWorkers === 0 && !workersUnknown;
+  const tablesPast = `${queueLength} table${queueLength > 1 ? 's' : ''} past vacuum trigger`;
+
   if (!warn) {
     const suffix = queueLength > 0
-      ? `; ${queueLength} table${queueLength > 1 ? 's' : ''} past vacuum trigger but being worked`
+      ? `; ${tablesPast}${beingWorked ? ' but being worked' : noWorkerBusy ? ', no autovacuum worker busy' : ''}`
       : '';
     return { status: 'ok', message: `No significant dead tuple accumulation; autovacuum keeping up${suffix}` };
   }
 
   if (queueLength > 0 && !saturated && !chronic) {
-    parts.push(`${queueLength} table${queueLength > 1 ? 's' : ''} past vacuum trigger (being worked)`);
+    parts.push(beingWorked ? `${tablesPast} (being worked)` : tablesPast);
   }
 
   return { status: 'warning', message: parts.join(', ') };
