@@ -539,3 +539,127 @@ def test_first_report_ends_now_later_ones_on_the_hour(tmp_path, use_current_time
     if fail_first:
         expected = [True, True, expected[2]]
     assert ["--use-current-time" in line.split() for line in calls.read_text().splitlines()] == expected
+
+
+def run_with_link_counts(tmp_path, start, after_sleep, change_at_sleep=1, stop_after_sleeps=3):
+    """The loop with `stat` stubbed: link counts per mounted file (instances.yml,
+    .pgwatch-config) as a single-file bind mount shows them: `start`, then `after_sleep`
+    from sleep number `change_at_sleep` on (the first sleep is the start-up wait; #523: a
+    file replaced on the host shows link count 0)."""
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir()
+    links = tmp_path / "links"
+    links.mkdir()
+    for name, n in start.items():
+        (links / name).write_text(str(n))
+    for name, n in after_sleep.items():
+        (links / f"{name}.next").write_text(str(n))
+    calls = tmp_path / "calls.txt"
+    sleeps = tmp_path / "sleeps.txt"
+    (stub_dir / "python").write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$*" >> "$STUB_CALLS"\n'
+        "exit 0\n"
+    )
+    (stub_dir / "sleep").write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$1" >> "$STUB_SLEEPS"\n'
+        f'[ "$(wc -l < "$STUB_SLEEPS")" -ge {stop_after_sleeps} ] && exit {STUB_EXIT_CODE}\n'
+        f'[ "$(wc -l < "$STUB_SLEEPS")" -eq {change_at_sleep} ] && '
+        'for f in "$STUB_LINKS"/*.next "$STUB_LINKS"/.*.next; do [ -e "$f" ] && mv "$f" "${f%.next}"; done\n'
+        "exit 0\n"
+    )
+    # stat -L -c %h <path>: the link count recorded for the path's file name
+    (stub_dir / "stat").write_text(
+        "#!/usr/bin/env bash\n"
+        'f="$STUB_LINKS/$(basename "${@: -1}")"\n'
+        '[ -e "$f" ] || exit 1\n'
+        'cat "$f"\n'
+    )
+    for name in ("python", "sleep", "stat"):
+        (stub_dir / name).chmod(0o755)
+    env = os.environ.copy()
+    for key in ("REPORTER_PROJECT_NAME", "REPORTER_INITIAL_DELAY_SECONDS", "REPORTER_INTERVAL_SECONDS",
+                "REPORTER_RETRY_SECONDS", "USE_CURRENT_TIME", "REPORTER_SOURCES_PATH"):
+        env.pop(key, None)
+    env.update(
+        {
+            "PATH": f"{stub_dir}:{env['PATH']}",
+            "STUB_CALLS": str(calls),
+            "STUB_SLEEPS": str(sleeps),
+            "STUB_LINKS": str(links),
+            "REPORTER_PGWATCH_CONFIG_PATH": str(tmp_path / ".pgwatch-config"),
+            "REPORTER_SOURCES_PATH": str(tmp_path / "instances.yml"),
+            "REPORTER_READINESS_TIMEOUT_SECONDS": "0",
+            "REPORTER_OUTPUT_TEMPLATE": str(tmp_path / "r.json"),
+        }
+    )
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)], env=env, capture_output=True, text=True,
+        stdin=subprocess.DEVNULL, timeout=TIMEOUT_SECONDS,
+    )
+    read = lambda p: p.read_text().splitlines() if p.exists() else []
+    reports = [c for c in read(calls) if "reporter.postgres_reports" in c]
+    return proc, reports, read(sleeps)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", ["instances.yml", ".pgwatch-config"])
+def test_a_file_replaced_during_the_start_up_wait_restarts_before_the_first_run(tmp_path, name):
+    """#523: a single-file mount keeps the old file after `sed -i` on the host; the reporter
+    exits (75) so Docker restarts it with the new one, instead of reporting from the old."""
+    proc, reports, sleeps = run_with_link_counts(
+        tmp_path, {"instances.yml": 1, ".pgwatch-config": 1}, {name: 0})
+
+    assert proc.returncode == 75, proc.stderr
+    assert reports == []
+    assert sleeps == ["180"]
+    assert f"{tmp_path / name} was replaced or removed on the host" in proc.stderr
+    assert "docker compose up -d" in proc.stderr
+
+
+@pytest.mark.unit
+def test_a_file_replaced_while_sleeping_restarts_before_the_next_run(tmp_path):
+    """Replaced during the daily sleep: one run, then the exit at the next cycle."""
+    proc, reports, sleeps = run_with_link_counts(
+        tmp_path, {"instances.yml": 1, ".pgwatch-config": 1}, {"instances.yml": 0}, change_at_sleep=2)
+
+    assert proc.returncode == 75, proc.stderr
+    assert len(reports) == 1
+    assert sleeps == ["180", "86400"]
+    assert "instances.yml was replaced or removed on the host" in proc.stderr
+
+
+@pytest.mark.unit
+def test_nothing_replaced_runs_on(tmp_path):
+    proc, reports, sleeps = run_with_link_counts(tmp_path, {"instances.yml": 1, ".pgwatch-config": 1}, {})
+
+    assert proc.returncode == STUB_EXIT_CODE, proc.stderr
+    assert len(reports) == 2
+    assert "was replaced" not in proc.stderr
+
+
+@pytest.mark.unit
+def test_link_count_zero_from_the_start_is_not_a_replacement(tmp_path):
+    """File sharing that always reports link count 0 must not restart the reporter forever."""
+    proc, reports, _ = run_with_link_counts(tmp_path, {"instances.yml": 0, ".pgwatch-config": 1}, {})
+
+    assert proc.returncode == STUB_EXIT_CODE, proc.stderr
+    assert len(reports) == 2
+    assert "instances.yml has link count 0 at start; replaced-file detection is off for it" in proc.stderr
+    assert "was replaced" not in proc.stderr
+
+
+@pytest.mark.unit
+def test_the_real_stat_reads_both_link_counts(tmp_path):
+    """No stub: the image's `stat -L -c %h` must return a number for both files, or every
+    replaced-file check would be skipped silently."""
+    sources = tmp_path / "instances.yml"
+    sources.write_text("[]\n")
+    (tmp_path / ".pgwatch-config").write_text("")
+    proc, _, _ = run_loop(tmp_path, stop_after_sleeps=2, python_exit=0,
+                          env_extra={"REPORTER_SOURCES_PATH": str(sources)})
+
+    assert proc.returncode == STUB_EXIT_CODE, proc.stderr
+    assert f"watching {sources} for replacement (link count 1)" in proc.stdout
+    assert f"watching {tmp_path / '.pgwatch-config'} for replacement (link count 1)" in proc.stdout

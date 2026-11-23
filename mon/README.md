@@ -247,6 +247,7 @@ Top level:
 | `views_sql` | path | embedded copy | The consumer views (`schema/views.sql`). |
 | `macros_sql` | path | none | Extra SQL run after the views (`sql/macros.sql`). |
 | `read_only` | bool | `false` | Open the store without WAL, compaction or ingest. Not allowed with sources or logs. |
+| `restart_on_replaced_files` | bool | `false` | A re-read file (this config, `sources_file`, `metrics_yml`) under a single-file bind mount keeps its old content when the host replaces it (`sed -i`, Ansible, `mv`); by path it then shows link count 0. `true`: log it and exit with code 75, so the container restarts with the new file (the Docker image sets this). `false`: log a warning. A file at link count 0 when first seen is not checked. |
 | `store`, `http`, `collector`, `ingest`, `scrape`, `rules` | maps | | See below. |
 | `rds` | list | empty | RDS or Aurora instances polled for host metrics: `instance_id`, `region`, `cluster`, `node_name`, `role_arn`, `external_id`, `poll_interval_s` (1 to 300, default 60). |
 

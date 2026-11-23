@@ -14,10 +14,12 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
 	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"gitlab.com/postgres-ai/postgresai/instance-jobs/internal/collect"
@@ -285,6 +287,64 @@ type Runner struct {
 	// true. The monitoring arm is single-goroutine and the lock is free there.
 	mu                     sync.Mutex
 	consecutiveJobFailures int
+
+	// linkCount stats the config file by path (#523); injectable because a plain file
+	// system never shows link count 0 for a path. replacedArmed is true once the file was
+	// seen linked: a later 0 means a single-file bind mount kept the old file after the
+	// host replaced it. Loop goroutine only.
+	linkCount     func(path string) (uint64, bool)
+	replacedArmed map[string]bool
+	replacedFile  string
+}
+
+// ErrConfigReplaced ends Run when the config file was replaced on the host under a
+// single-file bind mount: the container still reads the old file, and only a restart
+// mounts the new one (#523). main exits with ReplacedExitCode; Docker restarts it.
+var ErrConfigReplaced = errors.New("config file replaced on the host")
+
+// ReplacedExitCode is the exit code for ErrConfigReplaced (as pgai-mon and the reporter).
+const ReplacedExitCode = 75
+
+// statLinkCount is the file's link count by path (following symlinks).
+func statLinkCount(path string) (uint64, bool) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0, false
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return uint64(st.Nlink), true
+}
+
+// configReplaced reports whether path's link count went from >= 1 to 0 since it was
+// first seen. A file at 0 when first seen is never reported (file sharing that always
+// says 0 would otherwise restart the container forever); one that cannot be stat'ed is
+// looked at again next tick.
+func (r *Runner) configReplaced(path string) bool {
+	if r.linkCount == nil {
+		return false
+	}
+	n, ok := r.linkCount(path)
+	if !ok {
+		return false
+	}
+	armed, seen := r.replacedArmed[path]
+	if r.replacedArmed == nil {
+		r.replacedArmed = map[string]bool{}
+	}
+	switch {
+	case !seen && n == 0:
+		log.Printf("%s has link count 0 at start; replaced-file detection is off for it", path)
+		r.replacedArmed[path] = false
+	case !seen:
+		r.replacedArmed[path] = true
+	case armed && n == 0:
+		r.replacedArmed[path] = false
+		return true
+	}
+	return false
 }
 
 // New builds a Runner with the production dependencies.
@@ -317,6 +377,7 @@ func New(healthPath, clientVersion string) *Runner {
 		monotonic:  time.Now,
 		sleep:      sleepCtx,
 		budget:     jobBudget,
+		linkCount:  statLinkCount,
 	}
 }
 
@@ -327,6 +388,12 @@ func (r *Runner) Run(ctx context.Context) error {
 	r.setHealth(true, "", defaultPollInterval)
 	for {
 		wait := r.tick(ctx)
+		if r.replacedFile != "" {
+			log.Printf("%s was replaced or removed on the host; the container still sees the old file. "+
+				"Exiting so Docker restarts instance-jobs with the new one. If the file was removed: remove the "+
+				"directory Docker creates at that path (sudo rmdir), restore the file, then docker compose up -d.", r.replacedFile)
+			return ErrConfigReplaced
+		}
 		if !r.sleep(ctx, wait) {
 			return ctx.Err()
 		}
@@ -336,6 +403,11 @@ func (r *Runner) Run(ctx context.Context) error {
 // tick runs one poll-work-submit cycle and returns how long to sleep.
 func (r *Runner) tick(ctx context.Context) time.Duration {
 	cfg, err := config.Load()
+	// Between batches only: no claimed job is left running (#523).
+	if r.configReplaced(cfg.Path) {
+		r.replacedFile = cfg.Path
+		return 0
+	}
 	if err != nil {
 		// Not a transient poll failure: the file is there and cannot be read,
 		// which on this service usually means it is 0600 and owned by someone

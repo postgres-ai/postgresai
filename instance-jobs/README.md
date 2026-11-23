@@ -326,7 +326,11 @@ it was installed before that fix; re-running `mon local-install` records the id,
 and the file is re-read on the next tick.
 
 The file is re-read on every tick, so an id written after the container started
-is picked up without a restart. If anything needed is missing or unusable the
+is picked up without a restart. That holds for a write in place (the CLI writes
+this way). compose mounts the file on its own, and such a mount keeps the old
+file when a tool replaces it (`sed -i`, Ansible, `mv`); at its next tick, before
+it polls, the process then logs it and exits with code 75, and Docker restarts it
+with the new file (#523; a removed file: see `CONTRIBUTING.md`). If anything needed is missing or unusable the
 process **idles** — one log line an hour, no crash loop — and reports
 **unhealthy** with the reason, because a container someone enabled on purpose
 that is collecting nothing is exactly what must not look green in `mon health`.

@@ -14,8 +14,13 @@ metrics_yml: /etc/pgai-mon/metrics.yml
 macros_sql: /usr/share/pgai-mon/macros.sql
 preset: full
 # The targets `postgresai mon targets add/remove` maintain (compose mounts the
-# project's instances.yml here); re-read on change.
+# project's instances.yml here); re-read on change (see restart_on_replaced_files).
 sources_file: /etc/pgai-mon/instances.yml
+# compose mounts instances.yml as a single file, which keeps the inode it was mounted
+# with: a tool that replaces the file (sed -i, Ansible, mv) leaves pgai-mon on the old
+# one. pgai-mon then exits (code 75) and Docker restarts it with the new file (#523).
+# An edit in place is re-read within collector.reload_interval_s, with no restart.
+restart_on_replaced_files: true
 # Host metrics: the scrape files `postgresai mon targets add` writes for Supabase and
 # ClickHouse Cloud (compose mounts the project's host-metrics/ here); re-read on change.
 #

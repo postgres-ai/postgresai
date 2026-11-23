@@ -84,6 +84,10 @@ func main() {
 
 	log.Printf("starting (version %s)", version)
 	err := runner.New(healthPath, clientVersion()).Run(ctx)
+	if errors.Is(err, runner.ErrConfigReplaced) {
+		// Docker's restart policy brings the container back with the new file (#523).
+		os.Exit(runner.ReplacedExitCode)
+	}
 	if err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal(err)
 	}
