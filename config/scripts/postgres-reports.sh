@@ -29,6 +29,34 @@ use_current_time="${USE_CURRENT_TIME:-false}"
 pgwatch_config_path="${REPORTER_PGWATCH_CONFIG_PATH:-/app/.pgwatch-config}"
 api_url="${REPORTER_API_URL:-}"
 
+# docker-compose.yml mounts instances.yml and .pgwatch-config as single files, which keep the
+# inode they were mounted with: a tool that replaces a file on the host (sed -i, Ansible, mv)
+# leaves this container on the old one, whose link count (by path) is then 0 (#523). Before
+# each run: exit so Docker restarts the reporter with the new file. A file at link count 0 when
+# first seen is not checked (file sharing that always says 0 would restart it forever).
+replaced_exit_code=75
+declare -A replaced_armed=()
+check_replaced_files() {
+  local f n
+  for f in "$@"; do
+    n="$(stat -L -c %h "${f}" 2>/dev/null)" || continue
+    if [[ -z "${replaced_armed[${f}]+x}" ]]; then
+      if [[ "${n}" == "0" ]]; then
+        echo "postgres-reports: ${f} has link count 0 at start; replaced-file detection is off for it" >&2
+        replaced_armed[${f}]=0
+      else
+        echo "postgres-reports: watching ${f} for replacement (link count ${n})"
+        replaced_armed[${f}]=1
+      fi
+    elif [[ "${replaced_armed[${f}]}" == "1" && "${n}" == "0" ]]; then
+      echo "postgres-reports: ${f} was replaced or removed on the host; the container still sees the old file." \
+        "Exiting so Docker restarts postgres-reports with the new one. If the file was removed: remove the" \
+        "directory Docker creates at that path (sudo rmdir), restore the file, then docker compose up -d." >&2
+      exit "${replaced_exit_code}"
+    fi
+  done
+}
+
 sleep_seconds() {
   local s
   s="$1"
@@ -105,6 +133,7 @@ fi
 export REPORTER_API_URL="${api_url}"
 
 echo "postgres-reports: initial_delay_seconds=${initial_delay_seconds}, interval_seconds=${interval_seconds}, readiness_timeout_seconds=${readiness_timeout_seconds}"
+check_replaced_files "${sources_path}" "${pgwatch_config_path}"
 sleep_seconds "$initial_delay_seconds"
 
 if [[ "${readiness_timeout_seconds}" =~ ^[0-9]+$ ]] && (( readiness_timeout_seconds > 0 )); then
@@ -119,6 +148,7 @@ fi
 # Later runs keep the hour-aligned window unless USE_CURRENT_TIME=true.
 first_run=true
 while true; do
+  check_replaced_files "${sources_path}" "${pgwatch_config_path}"
   output_path="$(date -u +"${output_template}")"
   reporter_args=(--mon-url "${mon_url}" --output "${output_path}")
   if [[ "${use_current_time}" == "true" || "${first_run}" == "true" ]]; then

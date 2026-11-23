@@ -205,6 +205,10 @@ fn main() -> anyhow::Result<()> {
     let r = main_cmd();
     // a read-only open's scratch dir (crashes and kills are swept by the next open)
     store::remove_own_scratch();
+    if r.is_ok() && collector::RESTART_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) {
+        // a replaced config file (#523): Docker's restart policy brings pgai-mon back with it
+        std::process::exit(collector::RESTART_EXIT_CODE);
+    }
     r
 }
 
@@ -277,6 +281,8 @@ fn main_cmd() -> anyhow::Result<()> {
                 sources: vec![],
                 sources_file: None,
                 config_path: None,
+                // serve has no sources and no config file to watch
+                restart_on_replaced_files: false,
                 store: Default::default(),
                 http: config::HttpCfg {
                     listen,

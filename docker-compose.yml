@@ -116,7 +116,8 @@ services:
       - target-db
     restart: unless-stopped
 
-  # pgai-mon: collects the targets in instances.yml (re-read on change), stores
+  # pgai-mon: collects the targets in instances.yml (re-read on change; a file
+  # replaced on the host, e.g. by sed -i, makes it exit and restart: #523), stores
   # Parquet, serves read-only SQL to Grafana, the reporter and instance-jobs, and
   # takes pushed samples (host metrics). Config: /etc/pgai-mon/pgai-mon.yml in
   # the image (mon/docker/pgai-mon.yml).

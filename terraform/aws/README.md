@@ -183,6 +183,7 @@ ssh ubuntu@your-ip
 cd /home/postgres_ai/postgres_ai
 sudo -u postgres_ai vim instances.yml
 # pgai-mon picks up the change within its reload interval; no restart needed
+# (an editor that saves to a new file makes pgai-mon restart by itself instead)
 ```
 
 ### Backup

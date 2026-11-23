@@ -174,7 +174,12 @@ Start everything:
 docker compose up -d
 ```
 
-pgai-mon reloads `instances.yml` by itself when it changes; nothing needs a restart.
+pgai-mon picks up a changed `instances.yml` by itself:
+
+- **Edited in place** (an editor that writes the file in place, `cat > instances.yml`, `postgresai mon targets add/remove`): re-read within 30 s, no restart.
+- **Replaced** (`sed -i`, Ansible's `template` or `copy`, `mv`, editors that save to a new file): compose mounts the file on its own, and such a mount keeps the old file. pgai-mon notices within 30 s, logs why, and exits; Docker restarts it with the new file. The reporter does the same before its next run, and instance-jobs (`.pgwatch-config`) before its next poll. A job that replaces the file on every run (a cron `sed -i`) restarts pgai-mon every time.
+- The new file must stay readable by the install user: a `sudo mv` of a root-owned 0600 file leaves pgai-mon collecting nothing (its log names the file) until the owner is fixed.
+- **Removed**: the services that mount it stop at their next check, and Docker creates a root-owned directory in its place. Remove that directory (`sudo rmdir instances.yml`), restore the file, then `docker compose up -d`. (`postgresai mon targets add` also replaces the directory, with a file holding only the target it adds; `docker compose up -d` is still needed.)
 
 Useful URLs/ports:
 
@@ -292,7 +297,7 @@ Then attach:
 
 - **Compose says `PGAI_TAG is required`**: set it in `.env` (see above).
 - **Host reporter can’t connect to pgai-mon**: make sure the stack is up (`docker-compose.yml` publishes pgai-mon on `127.0.0.1:8765`) and `PGAI_MON_TOKEN` matches the one in `.env`.
-- **Edited `instances.yml`**: pgai-mon reloads it by itself; `docker compose logs pgai-mon` shows the new source.
+- **Edited `instances.yml`**: pgai-mon reloads it by itself (see above); `docker compose logs pgai-mon` shows the new source, or the restart when the file was replaced.
 
 ## Alternative local development (always rebuild images)
 

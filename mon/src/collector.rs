@@ -6,6 +6,7 @@ use crate::model::*;
 use crate::store::Shared;
 use crate::Msg;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch, OwnedSemaphorePermit, Semaphore};
@@ -1760,6 +1761,76 @@ fn fingerprint(src: &Source, primary: &[Scheduled], standby: &[Scheduled], cc: &
     xxhash_rust::xxh3::xxh3_64(format!("{src:?}|{primary:?}|{standby:?}|{cc:?}").as_bytes())
 }
 
+/// Set when a replaced file made pgai-mon shut down to be restarted (main exits with this code).
+pub static RESTART_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub const RESTART_EXIT_CODE: i32 = 75;
+
+/// The link count of the file at `p` (by path, following symlinks); None when it cannot be stat'ed.
+fn link_count(p: &Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(p).ok().map(|m| m.nlink())
+}
+
+/// A single-file bind mount keeps the inode it was mounted with: a host tool that replaces the
+/// file (sed -i, Ansible, mv) leaves the container on the old one, whose link count by path is
+/// then 0 (#523). Outside such a mount a path never shows link count 0.
+#[derive(Default)]
+pub struct ReplacedFiles {
+    /// true: seen with link count >= 1, so a later 0 means replaced; false: no longer checked.
+    armed: BTreeMap<PathBuf, bool>,
+}
+
+impl ReplacedFiles {
+    /// The files whose link count went from >= 1 to 0 since they were first seen. Each is
+    /// reported once. A file at 0 when first seen is never reported (file sharing that always
+    /// says 0 would otherwise restart pgai-mon forever); one that cannot be stat'ed is looked
+    /// at again next time.
+    pub fn check(&mut self, files: &[PathBuf], nlink: impl Fn(&Path) -> Option<u64>) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for p in files {
+            let Some(n) = nlink(p) else { continue };
+            match self.armed.get(p) {
+                None if n == 0 => {
+                    eprintln!(
+                        "collector: {} has link count 0 at start; replaced-file detection is off for it",
+                        p.display()
+                    );
+                    self.armed.insert(p.clone(), false);
+                }
+                None => {
+                    self.armed.insert(p.clone(), true);
+                }
+                Some(true) if n == 0 => {
+                    self.armed.insert(p.clone(), false);
+                    out.push(p.clone());
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+}
+
+/// What a replaced file `p` leads to: true = restart (restart_on_replaced_files), false = a
+/// warning and keep running. Logs either way.
+fn restart_for_replaced(p: &Path, restart: bool) -> bool {
+    if restart {
+        eprintln!(
+            "pgai-mon: {} was replaced or removed on the host; the container still sees the old file. \
+             Exiting so Docker restarts pgai-mon with the new one. If the file was removed: remove the \
+             directory Docker creates at that path (sudo rmdir), restore the file, then docker compose up -d.",
+            p.display()
+        );
+    } else {
+        eprintln!(
+            "collector: {} was replaced or removed (link count 0): a single-file bind mount keeps the old \
+             file; restart pgai-mon to read the new one",
+            p.display()
+        );
+    }
+    restart
+}
+
 /// Start, restart and stop sources to match the config: at start, on SIGHUP and every
 /// collector.reload_interval_s (the config file, its sources_file and metrics.yml are read
 /// again; a file that fails to load keeps the running set as it is).
@@ -1768,7 +1839,24 @@ pub async fn run_manager(initial: Config, ctx: CollectorCtx) {
     let mut hup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()).ok();
     let mut cfg = initial;
     let mut first = true;
+    let mut replaced = ReplacedFiles::default();
     loop {
+        let files: Vec<PathBuf> = [
+            cfg.config_path.clone(),
+            cfg.sources_file.clone(),
+            Some(cfg.metrics_yml.clone()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        for p in replaced.check(&files, link_count) {
+            if restart_for_replaced(&p, cfg.restart_on_replaced_files) {
+                RESTART_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+                // the SIGTERM path: stop serving, flush, then main exits with RESTART_EXIT_CODE
+                unsafe { libc::raise(libc::SIGTERM) };
+                return;
+            }
+        }
         if !first {
             if let Some(p) = &cfg.config_path {
                 match Config::load(p) {
@@ -1861,6 +1949,98 @@ fn apply_sources(cfg: &Config, ctx: &CollectorCtx, running: &mut BTreeMap<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #523: link counts as a single-file bind mount shows them, per path and call.
+    fn counts<'a>(seq: &'a [(&'a str, Option<u64>)]) -> impl Fn(&Path) -> Option<u64> + 'a {
+        move |p: &Path| seq.iter().find(|(k, _)| Path::new(k) == p).and_then(|(_, n)| *n)
+    }
+
+    #[test]
+    fn replaced_file_is_reported_once_after_it_was_seen_linked() {
+        let files = [PathBuf::from("/c/pgai-mon.yml"), PathBuf::from("/c/instances.yml")];
+        let mut r = ReplacedFiles::default();
+        assert!(r
+            .check(
+                &files,
+                counts(&[("/c/pgai-mon.yml", Some(1)), ("/c/instances.yml", Some(1))])
+            )
+            .is_empty());
+        assert!(r
+            .check(
+                &files,
+                counts(&[("/c/pgai-mon.yml", Some(1)), ("/c/instances.yml", Some(1))])
+            )
+            .is_empty());
+        // sed -i on the host: the mount now shows link count 0
+        let got = r.check(
+            &files,
+            counts(&[("/c/pgai-mon.yml", Some(1)), ("/c/instances.yml", Some(0))]),
+        );
+        assert_eq!(got, vec![PathBuf::from("/c/instances.yml")]);
+        // reported once (the flag-off warning is not repeated every tick)
+        assert!(r
+            .check(
+                &files,
+                counts(&[("/c/pgai-mon.yml", Some(1)), ("/c/instances.yml", Some(0))])
+            )
+            .is_empty());
+    }
+
+    #[test]
+    fn file_at_link_count_zero_from_the_start_is_never_reported() {
+        // file sharing that always says 0 must not restart pgai-mon every tick
+        let files = [PathBuf::from("/c/instances.yml")];
+        let mut r = ReplacedFiles::default();
+        for _ in 0..3 {
+            assert!(r.check(&files, counts(&[("/c/instances.yml", Some(0))])).is_empty());
+        }
+        // and stays off even if it later shows 1 then 0
+        assert!(r.check(&files, counts(&[("/c/instances.yml", Some(1))])).is_empty());
+        assert!(r.check(&files, counts(&[("/c/instances.yml", Some(0))])).is_empty());
+    }
+
+    #[test]
+    fn file_not_statable_yet_is_armed_when_it_appears() {
+        let files = [PathBuf::from("/c/instances.yml")];
+        let mut r = ReplacedFiles::default();
+        assert!(r.check(&files, counts(&[("/c/instances.yml", None)])).is_empty());
+        assert!(r.check(&files, counts(&[("/c/instances.yml", Some(1))])).is_empty());
+        assert_eq!(
+            r.check(&files, counts(&[("/c/instances.yml", Some(0))])),
+            files.to_vec()
+        );
+    }
+
+    #[test]
+    fn a_real_file_replaced_by_rename_keeps_link_count_one_by_path() {
+        // outside a single-file mount the path follows the new file: nothing to report
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("instances.yml");
+        std::fs::write(&f, "[]").unwrap();
+        let files = [f.clone()];
+        let mut r = ReplacedFiles::default();
+        assert!(r.check(&files, link_count).is_empty());
+        let tmp = dir.path().join("instances.yml.tmp");
+        std::fs::write(&tmp, "[]\n").unwrap();
+        std::fs::rename(&tmp, &f).unwrap();
+        assert!(r.check(&files, link_count).is_empty());
+        assert_eq!(link_count(&f), Some(1));
+    }
+
+    #[test]
+    fn replaced_file_restarts_only_with_the_setting() {
+        let p = Path::new("/etc/pgai-mon/instances.yml");
+        assert!(restart_for_replaced(p, true));
+        assert!(!restart_for_replaced(p, false), "standalone: a warning, no exit");
+    }
+
+    #[test]
+    fn image_config_restarts_on_replaced_files() {
+        let c: Config = serde_yaml::from_str(include_str!("../docker/pgai-mon.yml")).unwrap();
+        assert!(c.restart_on_replaced_files);
+        let standalone: Config = serde_yaml::from_str("store_dir: /s\nmetrics_yml: /m.yml\n").unwrap();
+        assert!(!standalone.restart_on_replaced_files);
+    }
 
     #[tokio::test]
     async fn reload_publishes_dictionary_only_after_valid_inputs() {

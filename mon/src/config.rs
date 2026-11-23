@@ -39,6 +39,11 @@ pub struct Config {
     /// Open the store read-only (no WAL, no compaction, no ingest, nothing written in the store).
     #[serde(default)]
     pub read_only: bool,
+    /// When a re-read file (this config, sources_file, metrics_yml) was replaced on the host
+    /// under a single-file bind mount (link count 0 by path, #523): true exits (code 75) so the
+    /// container restarts with the new file; false only warns. True in the Docker image.
+    #[serde(default)]
+    pub restart_on_replaced_files: bool,
     /// The file this config was loaded from (re-read on reload).
     #[serde(skip)]
     pub config_path: Option<PathBuf>,

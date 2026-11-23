@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Monitoring v4 picks up an `instances.yml` that a tool replaced on the host (`sed -i`, Ansible, `mv`). Compose mounts the file on its own, and such a mount kept the old file, so pgai-mon and the reporter went on with the old targets until a restart. Now pgai-mon (within 30 s), the reporter (before its next run) and instance-jobs (`.pgwatch-config`, before its next poll) log it and exit with code 75, and Docker restarts them with the new file. An edit in place is still re-read without a restart (postgres-ai/postgresai#523).
+
 - Monitoring v4's reporter fetches each per-query file metric for up to 100 statements of a node in one query, instead of one query per statement and database. On a 2 vCPU box with a PG 17 primary, its standby and a PG 13 primary, a report run takes 5.6 minutes instead of 13.5, and its per-query files 22 seconds instead of 9 minutes; the files are unchanged (postgres-ai/postgresai#524).
 
 - Monitoring v4 lets heavy panel queries use both slots on two-slot hosts. Short queries go first while heavy waiters are fresh; arrival-plus-service-time ageing prevents starvation under sustained short traffic. The memory gate stays in force (postgres-ai/postgresai#516).
