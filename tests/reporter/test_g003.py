@@ -72,6 +72,68 @@ def test_no_series_is_no_pairs():
     assert g003.lock_waits([], [], window={"start": "s", "end": "e", "days": 1.0})["pairs"] == []
 
 
+def day_answer(rows, *, at=False):
+    """One day's max_over_time (keeps the name) or tmax_over_time (drops it) answer."""
+    out = []
+    for metric, value in rows:
+        metric = dict(metric) if not at else {k: v for k, v in metric.items() if k != "__name__"}
+        out.append({"metric": metric, "value": [7 * 86400, str(value)]})
+    return out
+
+
+def test_combined_days_keep_each_series_largest_maximum_and_its_time():
+    a, b = lock_series(pid="10")["metric"], lock_series(pid="11")["metric"]
+    longest_days = [day_answer([(a, 300.0)]), day_answer([]), day_answer([(a, 700.0), (b, 50.0)])]
+    at_days = [day_answer([(a, 6 * 86400 + 5)], at=True), day_answer([], at=True),
+               day_answer([(a, 4 * 86400 + 9), (b, 4 * 86400 + 1)], at=True)]
+    longest, at = g003.combine_days(longest_days, at_days)
+    assert [(x["metric"]["blocked_pid"], x["value"][1]) for x in longest] == [("10", "700.0"), ("11", "50.0")]
+    assert longest[0]["metric"]["__name__"] == "pgwatch_lock_waits_blocked_ms"
+    assert [(x["metric"]["blocked_pid"], x["value"][1]) for x in at] == [("10", str(4 * 86400 + 9)), ("11", str(4 * 86400 + 1))]
+
+
+@pytest.mark.parametrize("order", [1, -1])
+def test_a_maximum_on_several_days_takes_the_latest_time_as_tmax_over_time_does(order):
+    a = lock_series()["metric"]
+    days = [(day_answer([(a, 900.0)]), day_answer([(a, 6 * 86400 + 30)], at=True)),   # today
+            (day_answer([(a, 900.0)]), day_answer([(a, 5 * 86400 + 60)], at=True)),   # yesterday
+            (day_answer([(a, 100.0)]), day_answer([(a, 4 * 86400)], at=True))][::order]
+    longest, at = g003.combine_days([d[0] for d in days], [d[1] for d in days])
+    assert longest[0]["value"][1] == "900.0" and at[0]["value"][1] == str(6 * 86400 + 30)
+
+
+def test_combined_days_equal_one_query_over_the_window():
+    """Against the definition: max and the LAST time of the max over (t - 7d, t], with ties."""
+    import random
+    rnd = random.Random(530)
+    t, day = 7 * 86400, 86400
+    metrics = [lock_series(pid=str(p))["metric"] for p in range(12)]
+    samples = {i: [(ts, float(rnd.choice([10, 20]))) for ts in sorted(rnd.sample(range(1, t + 1), rnd.randint(0, 9)))]
+               for i in range(len(metrics))}
+    longest_days, at_days = [], []
+    for n in range(7):
+        lo, hi = t - (n + 1) * day, t - n * day
+        rows = {i: [(ts, v) for ts, v in s if lo < ts <= hi] for i, s in samples.items()}
+        longest_days.append(day_answer([(metrics[i], max(v for _, v in r)) for i, r in rows.items() if r]))
+        at_days.append(day_answer([(metrics[i], max(ts for ts, v in r if v == max(x for _, x in r)))
+                                   for i, r in rows.items() if r], at=True))
+    longest, at = g003.combine_days(longest_days, at_days)
+    want = {i: (max(v for _, v in s), max(ts for ts, v in s if v == max(x for _, x in s))) for i, s in samples.items() if s}
+    got_max = {x["metric"]["blocked_pid"]: float(x["value"][1]) for x in longest}
+    got_at = {x["metric"]["blocked_pid"]: float(x["value"][1]) for x in at}
+    assert got_max == {str(i): m for i, (m, _) in want.items()}
+    assert got_at == {str(i): float(ts) for i, (_, ts) in want.items()}
+    assert len(want) >= 8 and sum(len(d) for d in longest_days) > len(want)  # series spread over days
+
+
+def test_a_failed_tmax_day_leaves_the_times_out_never_from_other_days():
+    a = lock_series()["metric"]
+    longest, at = g003.combine_days([day_answer([(a, 900.0)])], None)
+    assert len(longest) == 1 and at == []
+    out = g003.lock_waits(longest, at, window={"start": "s", "end": "e", "days": 7.0})
+    assert out["pairs"][0]["longest_at"] is None
+
+
 def test_a_role_row_keeps_only_timeouts_never_other_settings():
     assert g003._settings(["search_path=a, b", "statement_timeout=3s", "app.secret=x", "lock_timeout=8s"]) == {
         "statement_timeout": "3s", "lock_timeout": "8s"}
@@ -259,6 +321,55 @@ def test_a_failed_lock_wait_query_is_not_read_as_none(monkeypatch):
     validate_report(report)
     data = report["results"]["n1"]["data"]
     assert "lock_waits" not in data and data["lock_waits_error"]
+
+
+def test_lock_waits_are_asked_per_day_over_the_whole_window(monkeypatch):
+    generator = box(monkeypatch, Conn(ANSWERS))
+    # "tmax_over_time(" contains "max_over_time(": match it first
+    generator.instant = {"tmax_over_time": generator.instant.pop("tmax_over_time"), **generator.instant}
+    sent = []
+    plain = generator.query_instant
+    generator.query_instant = lambda query: sent.append(query) or plain(query)
+    data = generator.generate_g003_timeouts_report(A003, "c", "n1")["results"]["n1"]["data"]
+    lock = [q for q in sent if "pgwatch_lock_waits" in q]
+    sel = 'pgwatch_lock_waits_blocked_ms{cluster="c", node_name="n1"}[1d]'
+    # a day's max and tmax back to back: each query is evaluated at its own "now"
+    assert lock == [f"{fn}({sel}{f' offset {n}d' if n else ''})"
+                    for n in range(generator.G003_WINDOW_DAYS) for fn in ("max_over_time", "tmax_over_time")]
+    pair = data["lock_waits"]["pairs"][0]
+    assert (pair["sessions"], pair["longest_blocked_statement_age_ms"], pair["longest_at"]) == (1, 900, "1970-01-02T00:00:00Z")
+
+
+@pytest.mark.parametrize("failing_day", [0, 3, 6])
+def test_one_failed_day_fails_the_lock_waits_never_a_shorter_window(monkeypatch, failing_day):
+    generator = box(monkeypatch, Conn(ANSWERS))
+    plain = generator.query_instant
+    offset = f" offset {failing_day}d)" if failing_day else "[1d])"
+
+    def failing(query):
+        return {} if query.startswith("max_over_time(pgwatch_lock_waits") and query.endswith(offset) else plain(query)
+
+    generator.query_instant = failing
+    data = generator.generate_g003_timeouts_report(A003, "c", "n1")["results"]["n1"]["data"]
+    assert "lock_waits" not in data and data["lock_waits_error"] == "the monitoring query failed"
+
+
+def test_a_failed_tmax_day_keeps_the_pairs_without_times(monkeypatch):
+    generator = box(monkeypatch, Conn(ANSWERS))
+    plain = generator.query_instant
+    generator.query_instant = lambda q: {} if q.startswith("tmax_over_time") and q.endswith(" offset 2d)") else plain(q)
+    data = generator.generate_g003_timeouts_report(A003, "c", "n1")["results"]["n1"]["data"]
+    pair = data["lock_waits"]["pairs"][0]
+    assert pair["longest_blocked_statement_age_ms"] == 900 and pair["longest_at"] is None
+
+
+def test_days_without_lock_waits_are_not_a_failure(monkeypatch):
+    generator = box(monkeypatch, Conn(ANSWERS))
+    plain = generator.query_instant
+    generator.query_instant = lambda q: (
+        {"status": "success", "data": {"result": []}} if "lock_waits" in q and " offset " in q else plain(q))
+    data = generator.generate_g003_timeouts_report(A003, "c", "n1")["results"]["n1"]["data"]
+    assert data["lock_waits"]["pairs_total"] == 1 and "lock_waits_error" not in data
 
 
 def test_below_14_the_lock_wait_metric_does_not_exist(monkeypatch):

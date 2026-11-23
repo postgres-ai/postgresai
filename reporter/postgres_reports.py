@@ -1075,21 +1075,40 @@ class PostgresReportGenerator:
             data["deadlock_window_error"] = "monitoring has fewer than two readings of the counter"
         else:
             data["deadlock_window"] = window
-            metric = f'pgwatch_lock_waits_blocked_ms{{{where}}}[{self.G003_WINDOW_DAYS}d]'
-            longest = None
+
+            def per_day() -> Tuple[Optional[List[List[Dict[str, Any]]]], Optional[List[List[Dict[str, Any]]]]]:
+                """max_over_time and tmax_over_time over each day of the window, (t - (n+1)d, t - nd]:
+                one series per blocked/blocker pair, too many for one 7-day query (#530). A day's two
+                queries run back to back, so both see (nearly) the same day: each query is evaluated
+                at its own "now". The maxima are None if a day failed, the times None if a day's
+                tmax failed."""
+                maxima: List[List[Dict[str, Any]]] = []
+                times: Optional[List[List[Dict[str, Any]]]] = []
+                for n in range(self.G003_WINDOW_DAYS):
+                    sel = f'pgwatch_lock_waits_blocked_ms{{{where}}}[1d]{f" offset {n}d" if n else ""}'
+                    rows = latest(f'max_over_time({sel})')
+                    if rows is None:
+                        return None, None
+                    maxima.append(rows)
+                    if times is not None:
+                        at_rows = latest(f'tmax_over_time({sel})')
+                        times = None if at_rows is None else times + [at_rows]
+                return maxima, times
+
+            longest_days, at_days = None, None
             if major.isdigit() and int(major) < 14:  # the metric has SQL from 14 (metrics.yml lock_waits)
                 data["lock_waits_error"] = f"the lock-wait metric needs PostgreSQL 14; this is {major}"
             else:
-                longest = latest(f'max_over_time({metric})')
-                if longest is None:
+                longest_days, at_days = per_day()
+                if longest_days is None:
                     data["lock_waits_error"] = "the monitoring query failed"
-            if longest is not None:
+            if longest_days is not None:
+                longest, at = g003_facts.combine_days(longest_days, at_days)
                 texts: Dict[str, str] = {}
                 if longest:
                     for queries in self.get_queryid_queries_from_sink(cluster=cluster, node_name=node_name).values():
                         texts.update(queries)
-                data["lock_waits"] = g003_facts.lock_waits(
-                    longest, latest(f'tmax_over_time({metric})') or [], window=window, query_text=texts.get)
+                data["lock_waits"] = g003_facts.lock_waits(longest, at, window=window, query_text=texts.get)
 
         conn_str = next((src["conn_str"] for src in read_sources(self.sources_path)
                          if src["cluster"] == cluster and src["node_name"] == node_name and src["conn_str"]), None)
