@@ -217,6 +217,7 @@ def synthetic(base, t0, t1):
                        ("pgai_mon_s3_commits_total", [float(i // 4) for i in range(n)]),
                        ("pgai_mon_s3_upload_errors_total", [float(i // 100) for i in range(n)])):
         own(name, vals)
+    own("pgai_mon_build_info", [1.0] * n, version="4.0.0-dev.1")
     for cls, rate in (("short", 2), ("heavy", 0.1)):
         own("pgai_mon_admission_started_total", counter(rate, 10), **{"class": cls})
     for cache, hit, miss in (("query", 1.5, 0.5), ("footer", 20, 0.2), ("row", 0.6, 0.4)):

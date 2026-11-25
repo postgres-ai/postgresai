@@ -197,7 +197,7 @@ class Emitted(unittest.TestCase):
         self.assertEqual(set(ts), set(inst))
         for k, i in inst.items():
             self.assertEqual(step in ts[k], i, k)
-        self.assertEqual(sum(inst.values()), 7)
+        self.assertEqual(sum(inst.values()), 8)
 
     def test_table_values_keep_their_prometheus_name(self):
         """A table panel whose targets select `Value` first renames that field back: Grafana shows it
@@ -320,6 +320,26 @@ class SelfMonitoring(unittest.TestCase):
         self.assertEqual(orig - rows, kept | set(self.S.DROPPED))
         self.assertFalse(kept & set(self.S.DROPPED))
         self.assertTrue(kept <= set(panels(self.out)))
+
+    def test_version_banner(self):
+        """Panel 200, the original's banner: full width under the first row, the release as the
+        name of pgai_mon_build_info's one series (its value, 1, hidden)."""
+        orig, b = panels(self.src)[200], panels(self.out)[200]
+        self.assertNotIn(200, self.S.DROPPED)
+        self.assertEqual(b["gridPos"], orig["gridPos"])
+        self.assertEqual(b["gridPos"], {"h": 2, "w": 24, "x": 0, "y": 1})
+        self.assertEqual(min(p["gridPos"]["y"] for p in self.out["panels"] if p["id"] != 100), 1)
+        self.assertEqual((b["type"], b["title"], b.get("transparent")), ("stat", "", True))
+        self.assertEqual(b["options"]["textMode"], "name")
+        for k in ("colorMode", "justifyMode", "orientation"):
+            self.assertEqual(b["options"][k], orig["options"][k], k)
+        (t,) = b["targets"]
+        body = t["url_options"]["data"]
+        self.assertIn("prom_last('pgai_mon_build_info'", body)
+        self.assertIn("'PostgresAI ' || coalesce(q.labels['version'], '') AS __series", body)
+        self.assertTrue(body.startswith("-- pgai-window-v1 ${__from} ${__to} ${__interval_ms} instant\n"))
+        self.assertIn({"id": "displayName", "value": "${__field.labels.__series}"},
+                      b["fieldConfig"]["overrides"][0]["properties"])
 
     def test_targets(self):
         ps = [p for p in panels(self.out).values() if p["type"] != "row"]

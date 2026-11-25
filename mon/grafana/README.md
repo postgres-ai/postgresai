@@ -18,7 +18,12 @@ metric};
 metric}; `up`, `scrape_duration_seconds`, `scrape_samples_scraped` per scrape target; and the
 `series` view (series and metric counts). Kept from the original: "Time series in store" (was
 Victoria Metrics time series) and "Scrape duration by target". Dropped (`DROPPED` there): the
-version banner, the VictoriaMetrics and sink Postgres panels.
+VictoriaMetrics and sink Postgres panels.
+
+The version banner (panel 200, full width at the top) is back: the original read the Flask
+backend's `/version`; it now shows "PostgresAI <version>" from the `version` label of
+`pgai_mon_build_info` (value 1), which pgai-mon writes with its process series below. During
+the 5 minutes after an upgrade the banner can show both versions (stacked, in label order).
 
 The process itself (selfmon.rs: GET /health written as series every
 `collector.self_metrics_interval_s`, no labels) is charted in the "pgai-mon process" row: ingest rate
@@ -162,4 +167,3 @@ python3 mon/grafana/check_panels.py --url http://127.0.0.1:8765 [--range 7d] \
 
 CI runs it against a small fixture store (`tests/grafana_dashboards/test_sql_panels_run.py`,
 with `PGAI_MON_BIN` pointing at a built binary); every panel must show data there.
-
