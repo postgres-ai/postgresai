@@ -1,5 +1,5 @@
 //! The binary writes its own state (GET /health) as pgai_mon_* series: they exist, counters
-//! do not go down, and the process's RSS and CPU time are non-zero.
+//! do not go down, the process's RSS and CPU time are non-zero, and its version is a label.
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -120,6 +120,14 @@ fn binary_writes_its_own_series() {
     ] {
         assert!(v(k).iter().all(|&x| x >= 0.0 && x.is_finite()), "{k}");
     }
+    // the build's version, as a label of a series of 1s
+    let info = format!("pgai_mon_build_info{{version={}}}", pgai_mon::VERSION);
+    assert!(v(&info).iter().all(|&x| x == 1.0), "{info}");
+    assert_eq!(
+        got.keys().filter(|k| k.starts_with("pgai_mon_build_info")).count(),
+        1,
+        "{got:?}"
+    );
     // a local store: no S3 series
     assert!(!got.keys().any(|k| k.starts_with("pgai_mon_s3_")), "{got:?}");
 }

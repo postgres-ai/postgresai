@@ -54,6 +54,11 @@ pub fn samples(h: &Value, t_ms: i64) -> Vec<ExtSample> {
     };
     let num = |v: &Value, path: &[&str]| path.iter().try_fold(v, |v, k| v.get(k)).and_then(Value::as_f64);
 
+    // the release this process runs (crate::VERSION), as Prometheus' `*_build_info`: the version
+    // is the label, the value is 1
+    if let Some(v) = h["version"].as_str() {
+        put("pgai_mon_build_info", &[("version", v)], Some(1.0));
+    }
     put("pgai_mon_ingest_samples_total", &[], num(h, &["samples_in"]));
     put("pgai_mon_ingest_records_total", &[], num(h, &["records_in"]));
     put("pgai_mon_flushes_total", &[], num(h, &["flushes"]));
@@ -173,6 +178,7 @@ mod tests {
     #[test]
     fn health_maps_to_series() {
         let h = json!({
+            "version": "4.0.0-dev.1",
             "samples_in": 10, "records_in": 3, "flushes": 2, "flush_ms_last": 250, "late_flushes": 0,
             "compactions": 1, "wal_bytes": 4096, "files": 5, "parquet_bytes": 1000, "series_known": 7,
             "rss_bytes": 123, "cpu_seconds": 1.5,
@@ -186,6 +192,7 @@ mod tests {
         let s = samples(&h, 1000);
         assert!(s.iter().all(|x| x.ts == 1000));
         let v = |m: &str, l: &[(&str, &str)]| get(&s, m, l).map(|x| x.value);
+        assert_eq!(v("pgai_mon_build_info", &[("version", "4.0.0-dev.1")]), Some(1.0));
         assert_eq!(v("pgai_mon_flush_duration_seconds", &[]), Some(0.25));
         assert_eq!(v("pgai_mon_process_cpu_seconds_total", &[]), Some(1.5));
         assert_eq!(v("pgai_mon_admission_started_total", &[("class", "heavy")]), Some(2.0));
@@ -196,7 +203,7 @@ mod tests {
         // null: no sample
         assert_eq!(v("pgai_mon_reader_resident_memory_bytes", &[]), None);
         assert_eq!(v("pgai_mon_s3_last_commit_age_seconds", &[]), None);
-        assert_eq!(s.len(), 29); // 31 at most: two of them null here
+        assert_eq!(s.len(), 30); // 32 at most: two of them null here
     }
 
     #[test]
@@ -209,6 +216,7 @@ mod tests {
             .all(|x| !x.metric.starts_with("pgai_mon_reader_") && !x.metric.starts_with("pgai_mon_s3_")));
         assert!(get(&s, "pgai_mon_cache_hits_total", &[("cache", "footer")]).is_none());
         assert!(get(&s, "pgai_mon_cache_hits_total", &[("cache", "query")]).is_some());
+        assert!(s.iter().all(|x| x.metric != "pgai_mon_build_info"));
     }
 
     #[test]
