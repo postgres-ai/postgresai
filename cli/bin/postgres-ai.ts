@@ -1264,16 +1264,29 @@ function composeContentEqual(a: string, b: string): boolean {
  * @returns true if the compose was refreshed, false otherwise.
  */
 async function refreshBundledComposeIfStale(projectDir: string, oldTag?: string | null): Promise<boolean> {
+  return (await refreshBundledCompose(projectDir, oldTag)) === "refreshed";
+}
+
+/**
+ * refreshBundledComposeIfStale, saying what happened: "failed" when no valid
+ * compose could be fetched (the existing one is kept), "skipped" when this
+ * install's compose is not the CLI's to refresh (a git checkout, a pre-baked
+ * image, nothing deployed yet).
+ */
+async function refreshBundledCompose(
+  projectDir: string,
+  oldTag?: string | null,
+): Promise<"refreshed" | "current" | "skipped" | "failed"> {
   // Git checkouts manage docker-compose.yml via the repo itself (`git pull`).
-  if (fs.existsSync(path.resolve(projectDir, ".git"))) return false;
+  if (fs.existsSync(path.resolve(projectDir, ".git"))) return "skipped";
   // A pre-baked monitoring image already carries the compose for exactly this
   // version (platform-all#980): its deploy sets this to skip the fetch, so a
   // slow or unreachable gitlab.com cannot stall the install.
-  if (process.env.PGAI_SKIP_COMPOSE_REFRESH === "1") return false;
+  if (process.env.PGAI_SKIP_COMPOSE_REFRESH === "1") return "skipped";
 
   const composeFile = path.resolve(projectDir, "docker-compose.yml");
   // Nothing deployed yet -> the green-field bootstrap path handles fetching it.
-  if (!fs.existsSync(composeFile)) return false;
+  if (!fs.existsSync(composeFile)) return "skipped";
 
   // Same candidate refs as the green-field bootstrap — including the final
   // `main` fallback, so a non-git upgrade to a version whose tag is not (yet)
@@ -1288,7 +1301,7 @@ async function refreshBundledComposeIfStale(projectDir: string, oldTag?: string 
   if (!fetched || !isValidComposeYaml(fetched)) {
     console.error(`⚠ Could not refresh docker-compose.yml to ${pkg.version} (no valid compose was retrieved).`);
     console.error("  Keeping the existing compose. If dashboards are blank after upgrade, re-run this command once network is available.");
-    return false;
+    return "failed";
   }
 
   // Compare on-disk CONTENT against the freshly fetched target (whitespace-only
@@ -1296,7 +1309,7 @@ async function refreshBundledComposeIfStale(projectDir: string, oldTag?: string 
   // .env (local-install rewrites it before this runs), so we never rely on a
   // possibly-stale tag heuristic.
   const existing = fs.readFileSync(composeFile, "utf8");
-  if (composeContentEqual(existing, fetched)) return false; // already current
+  if (composeContentEqual(existing, fetched)) return "current";
 
   // Label the backup with the OLD (deployed) tag. Callers that already rewrote
   // .env pass it in (raw); otherwise read it from .env. Sanitize centrally so the
@@ -1327,7 +1340,7 @@ async function refreshBundledComposeIfStale(projectDir: string, oldTag?: string 
   fs.writeFileSync(composeFile, fetched, { encoding: "utf8", mode: 0o600 });
   const backupNote = backupName ? ` (backup: ${backupName})` : "";
   console.log(`✓ Refreshed docker-compose.yml to ${pkg.version}${backupNote}`);
-  return true;
+  return "refreshed";
 }
 
 /**
@@ -4160,10 +4173,12 @@ async function removeOldStackContainers(projectDir: string, oldCompose: string):
  * stack's before. `switchFrom` is the old file's text when this refresh
  * replaced the old stack's compose with pgai-mon's; `ok` is false (having said
  * why) when the file is still the old stack's, which this CLI cannot drive.
+ * A switch moves PGAI_TAG to `tag`.
  */
 async function refreshStackCompose(
   projectDir: string,
   refresh: () => Promise<unknown>,
+  tag: string = pkg.version,
 ): Promise<{ ok: boolean; switchFrom: string | null; oldRunning: boolean | null; oldTag: string | null }> {
   const before = readComposeText(projectDir);
   const wasOld = composeDefinesService(before, OLD_STACK_KEYSTONE);
@@ -4179,9 +4194,9 @@ async function refreshStackCompose(
   }
   // The old stack's tag names no pgai-mon image (pgai-mon did not exist then):
   // the new compose file runs this CLI's version, as `mon local-install` sets it.
-  if (oldTag !== pkg.version) {
-    setEnvValues(projectDir, { PGAI_TAG: pkg.version });
-    console.log(`PGAI_TAG in .env: ${oldTag ?? "(unset)"} -> ${pkg.version} (the pgai-mon stack's images)`);
+  if (oldTag !== tag) {
+    setEnvValues(projectDir, { PGAI_TAG: tag });
+    console.log(`PGAI_TAG in .env: ${oldTag ?? "(unset)"} -> ${tag} (the pgai-mon stack's images)`);
   }
   return { ok: true, switchFrom: before, oldRunning, oldTag };
 }
@@ -6386,10 +6401,18 @@ mon
   });
 mon
   .command("update")
-  .description("update monitoring stack (migrate .env, pull images)")
+  .description("update the monitoring stack to this CLI's version (migrate .env, pull images, re-create what changed)")
+  .option("--tag <tag>", `image tag to run (default: this CLI's version, ${pkg.version}); docker-compose.yml still moves to this CLI's version`)
   .option("--grafana", "run Grafana again after an earlier --no-grafana")
   .option("--no-grafana", "leave Grafana out of the stack (writes GRAFANA_SCALE=0 into .env)")
-  .action(async (opts: { grafana?: boolean }) => {
+  .action(async (opts: { tag?: string; grafana?: boolean }) => {
+    // The tag goes into .env as a line of its own: Docker's tag grammar.
+    if (opts.tag !== undefined && !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(opts.tag)) {
+      console.error(`✗ --tag ${JSON.stringify(opts.tag)} is not a Docker image tag`);
+      process.exitCode = 1;
+      return;
+    }
+    const tag = opts.tag ?? pkg.version;
     console.log("Updating PostgresAI monitoring stack...\n");
 
     try {
@@ -6429,13 +6452,21 @@ mon
       }
       console.log();
 
+      // What a failed pull puts back.
+      const isGit = fs.existsSync(path.resolve(projectDir, ".git"));
+      const composeBefore = readComposeText(projectDir);
+      const tagBefore = readEnvValue(projectDir, "PGAI_TAG") ?? null;
+
       // Step 2: refresh repo if this is a git-based deployment. Some users
       // upgrade purely via `npm install -g postgresai@latest` and don't have a
       // git checkout - in that case we skip git operations and still do the
       // env migration + docker pull.
+      // "skipped": a git checkout or PGAI_SKIP_COMPOSE_REFRESH=1, whose
+      // compose file is not this CLI's version.
+      // (Set in the callback below: the cast keeps TS from narrowing it.)
+      let composeState = "skipped" as Awaited<ReturnType<typeof refreshBundledCompose>>;
       const stack = await refreshStackCompose(projectDir, async () => {
-        const gitDir = path.resolve(projectDir, ".git");
-        if (fs.existsSync(gitDir)) {
+        if (isGit) {
           console.log("Fetching latest changes...");
           await execFilePromise("git", ["fetch", "origin"]);
 
@@ -6454,15 +6485,36 @@ mon
           // when it actually refreshes/warns, so don't pre-announce a refresh
           // that may turn out to be a no-op.
           console.log("(not a git checkout — checking bundled docker-compose.yml)");
-          await refreshBundledComposeIfStale(projectDir);
+          composeState = await refreshBundledCompose(projectDir);
         }
-      });
+      }, tag);
       if (!stack.ok) {
         process.exitCode = 1;
         return;
       }
 
-      // Step 3: pull new images.
+      // Step 3: the images of `tag`, as `mon local-install` sets them (a
+      // switch has done it already). Not over a compose file of an older
+      // version: new images against old wiring.
+      if (stack.switchFrom === null) {
+        if (composeState === "failed") {
+          console.error(`\n✗ PGAI_TAG stays ${tagBefore ?? "(unset)"}: the docker-compose.yml of ${pkg.version} could not be fetched, so nothing was pulled.`);
+          console.error("  Re-run 'postgresai mon update' once gitlab.com is reachable.");
+          process.exitCode = 1;
+          return;
+        }
+        if (composeState === "skipped" && opts.tag === undefined) {
+          if (tagBefore !== tag) {
+            const why = isGit ? "a git checkout" : "PGAI_SKIP_COMPOSE_REFRESH=1";
+            console.log(`PGAI_TAG stays ${tagBefore ?? "(unset)"}: docker-compose.yml here is not refreshed by this CLI (${why}), so it may not be ${pkg.version}'s. Give --tag <tag> to change the tag.`);
+          }
+        } else if (tagBefore !== tag) {
+          setEnvValues(projectDir, { PGAI_TAG: tag });
+          console.log(`PGAI_TAG in .env: ${tagBefore ?? "(unset)"} -> ${tag}`);
+        }
+      }
+
+      // Step 4: pull new images.
       console.log("\nUpdating Docker images...");
       const code = await runCompose(["pull"]);
 
@@ -6475,51 +6527,66 @@ mon
         }
         console.log("\n✓ Update completed successfully");
       } else if (code === 0) {
-        // `pull` cannot create a service that was not there before, and the
-        // `mon restart` suggested below is `docker compose restart`, which
-        // re-runs containers as recorded: neither would give the instance-jobs
-        // container the image just pulled, and on a box upgrading to the first
-        // version that has the service, neither would create it at all. So the
-        // scoped up runs here, but only when the profile is already on -- an
-        // upgrade never enables the channel by itself. postgresai#381.
-        if (instanceJobsProfileEnabled(readComposeProfiles(projectDir))) {
-          if (!(await applyInstanceJobsProfile(projectDir, true))) {
+        // Step 5: run the pulled images. `up -d` re-creates only the services
+        // whose image or settings changed (a changed GRAFANA_SCALE scales
+        // Grafana, a profile in COMPOSE_PROFILES starts its service); volumes
+        // are kept. `mon restart` (`compose restart`) would re-run the old
+        // containers, and `mon start` leaves a running stack alone.
+        // A stopped stack stays stopped: `mon stop && mon update` is how an
+        // operator updates without starting anything.
+        const effectiveTag = process.env.PGAI_TAG || readEnvValue(projectDir, "PGAI_TAG") || tag;
+        const running = await composeServiceRunning(projectDir, PGAI_MON_SERVICE);
+        if (running === true) {
+          console.log("\nRe-creating the services that changed, and those that depend on them (data volumes are kept)...");
+          if ((await runCompose(["up", "-d"])) !== 0) {
+            reportFailedServices(projectDir);
+            console.error(`\n✗ The images were pulled, but the stack did not start on the new images (PGAI_TAG=${effectiveTag}).`);
+            console.error("  Fix the cause above, then re-run 'postgresai mon update'.");
             process.exitCode = 1;
             return;
           }
-        }
-        // A changed GRAFANA_SCALE takes effect now: `up` scales the service
-        // to it, removing the container at 0.
-        // Only on a running stack: a scoped `up` on a stopped one would start
-        // Grafana alone. `mon start` applies the setting there.
-        if (opts.grafana !== undefined) {
-          if ((await composeServiceRunning(projectDir, PGAI_MON_SERVICE)) !== true) {
-            console.log("\n(the stack is not running, so Grafana was left as it is: 'postgresai mon start' applies the setting)");
-          } else if ((await runCompose(["up", "-d", "--no-deps", "grafana"])) !== 0) {
-            console.error(`\n✗ Could not ${opts.grafana ? "start" : "remove"} Grafana`);
-            process.exitCode = 1;
-            return;
+          console.log(`\n✓ Update completed successfully. The stack runs PGAI_TAG=${effectiveTag}`);
+        } else {
+          console.log(`\n✓ Images pulled (PGAI_TAG=${effectiveTag})`);
+          if (running === false) {
+            console.log("The stack is not running: 'postgresai mon start' starts it on the new images");
+            if (opts.grafana !== undefined) console.log("(the stack is not running, so Grafana was left as it is: 'postgresai mon start' applies the setting)");
+          } else {
+            console.log("Could not tell whether the stack is running, so nothing was re-created.");
+            console.log("To run the new images: postgresai mon stop && postgresai mon start (data volumes are kept)");
           }
         }
-        console.log("\n✓ Update completed successfully");
-        // `mon start` is `compose up -d`: it re-creates the services whose image changed.
-        // `mon restart` would restart the old containers on the old images.
-        console.log("\nTo run the updated images:");
-        console.log("  postgres-ai mon start");
       } else {
         console.error("\n✗ Docker image update failed");
-        // The old stack still runs, from a compose file that is gone. Put the
-        // file back (CLI-owned on a non-git install) so the next run detects
-        // the old stack again and retries the switch.
-        if (stack.switchFrom !== null) {
-          console.error(`  The pull used PGAI_TAG=${pkg.version} (this CLI's version): if no image has that tag, upgrade the CLI to a released version.`);
+        const tagNow = readEnvValue(projectDir, "PGAI_TAG") ?? null;
+        if (tagNow !== tagBefore) {
+          // As compose reads it: an exported PGAI_TAG wins over .env.
+          const pulled = process.env.PGAI_TAG || tagNow;
+          console.error(`  The pull used PGAI_TAG=${pulled}${pulled === pkg.version ? " (this CLI's version)" : ""}: if no image has that tag, ${opts.tag === undefined ? "upgrade the CLI to a released version" : "give a released one with --tag"}.`);
         }
-        if (stack.switchFrom !== null && !fs.existsSync(path.resolve(projectDir, ".git"))) {
+        // Back to the compose file and tag the running containers were made
+        // from (the CLI owns the file on a non-git install), so the next run
+        // retries. The old stack the switch would have replaced still runs.
+        if (stack.switchFrom !== null && !isGit) {
           fs.writeFileSync(path.resolve(projectDir, "docker-compose.yml"), stack.switchFrom, { encoding: "utf8", mode: 0o600 });
           // The old file with the new tag would name images the old stack never had.
           if (stack.oldTag !== null) setEnvValues(projectDir, { PGAI_TAG: stack.oldTag });
           console.error(`  The old stack was left running; its docker-compose.yml and PGAI_TAG${stack.oldTag !== null ? `=${stack.oldTag}` : ""} were put back.`);
           console.error("  Re-run 'postgresai mon update' to switch once the images can be pulled.");
+        } else if (stack.switchFrom === null) {
+          const putBack: string[] = [];
+          if (!isGit && composeBefore !== null && readComposeText(projectDir) !== composeBefore) {
+            fs.writeFileSync(path.resolve(projectDir, "docker-compose.yml"), composeBefore, { encoding: "utf8", mode: 0o600 });
+            putBack.push("docker-compose.yml");
+          }
+          if (tagNow !== tagBefore) {
+            setEnvValues(projectDir, { PGAI_TAG: tagBefore });
+            putBack.push(`PGAI_TAG${tagBefore !== null ? `=${tagBefore}` : ""}`);
+          }
+          if (putBack.length > 0) {
+            console.error(`  No container was re-created; ${putBack.join(" and ")} ${putBack.length > 1 ? "were" : "was"} put back.`);
+            console.error("  Re-run 'postgresai mon update' once the images can be pulled.");
+          }
         }
         process.exitCode = 1;
       }

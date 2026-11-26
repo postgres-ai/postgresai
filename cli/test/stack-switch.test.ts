@@ -297,11 +297,9 @@ describe("mon update on a pgai-mon install", () => {
     expect(r.status).toBe(0);
     const calls = composeCalls(p.calls());
     expect(calls.some((c) => / pull /.test(c))).toBe(true);
-    expect(calls.some((c) => / (down|up) /.test(c))).toBe(false);
+    expect(calls.some((c) => / down /.test(c))).toBe(false);
     expect(readEnv(p.dir)).toContain("PGAI_MON_TOKEN=" + "a".repeat(64));
     expect(r.stdout).not.toContain("Switched this install");
-    // An update that switches nothing leaves the tag alone.
-    expect(readEnv(p.dir)).toContain("PGAI_TAG=0.18.0");
   });
 
   test("--grafana on a stopped stack does not start Grafana alone; on a running one it applies", () => {
@@ -310,9 +308,129 @@ describe("mon update on a pgai-mon install", () => {
     expect(r1.status).toBe(0);
     expect(composeCalls(stopped.calls()).some((c) => / up /.test(c))).toBe(false);
     expect(r1.stdout).toContain("the stack is not running, so Grafana was left as it is");
+    // On a running stack the `up -d` that applies the update scales Grafana too.
     const running = makeProject("grafana-running", NEW_COMPOSE, NEW_ENV);
     expect(running.run(["mon", "update", "--grafana"], { NEW_RUNNING: "1" }).status).toBe(0);
-    expect(composeCalls(running.calls()).some((c) => / up -d --no-deps grafana /.test(c))).toBe(true);
+    expect(composeCalls(running.calls()).some((c) => / up -d \|/.test(c))).toBe(true);
+  });
+});
+
+describe("mon update moves the stack to this CLI's version and applies it (#536)", () => {
+  const tagLine = (tag: string) => new RegExp(`^PGAI_TAG=${tag.replace(/\./g, "\\.")}$`, "m");
+  // A pgai-mon compose file of an earlier version: the refresh replaces it.
+  const staleCompose = (name: string) => {
+    const f = resolve(tempDir, `${name}-stale.yml`);
+    fs.writeFileSync(f, `# an earlier version\n${fs.readFileSync(NEW_COMPOSE, "utf8")}`);
+    return f;
+  };
+
+  test("PGAI_TAG moves to the CLI's version before the pull, and the output says so", () => {
+    const p = makeProject("tag-advances", NEW_COMPOSE, NEW_ENV);
+    // The shim's pull fails unless .env has the CLI's version when it runs.
+    const r = p.run(["mon", "update"], { PULL_NEEDS_TAG: CLI_VERSION });
+    expect(r.status).toBe(0);
+    expect(readEnv(p.dir)).toMatch(tagLine(CLI_VERSION));
+    expect(r.stdout).toContain(`PGAI_TAG in .env: 0.18.0 -> ${CLI_VERSION}`);
+  });
+
+  test("--tag runs the tag given instead, so a pinned tag can be kept; --help shows it", () => {
+    const keep = makeProject("tag-kept", NEW_COMPOSE, NEW_ENV);
+    const r = keep.run(["mon", "update", "--tag", "0.18.0"], { PULL_NEEDS_TAG: "0.18.0" });
+    expect(r.status).toBe(0);
+    expect(readEnv(keep.dir)).toMatch(tagLine("0.18.0"));
+    expect(r.stdout).not.toContain("PGAI_TAG in .env");
+    const other = makeProject("tag-other", NEW_COMPOSE, NEW_ENV);
+    expect(other.run(["mon", "update", "--tag", "9.9.9"], { PULL_NEEDS_TAG: "9.9.9" }).status).toBe(0);
+    expect(readEnv(other.dir)).toMatch(tagLine("9.9.9"));
+    const help = keep.run(["mon", "update", "--help"]);
+    expect(help.stdout).toContain("--tag <tag>");
+    expect(help.stdout).toContain(CLI_VERSION);
+  });
+
+  test("a --tag that is not a Docker tag is refused before anything changes", () => {
+    const p = makeProject("tag-bad", NEW_COMPOSE, NEW_ENV);
+    const r = p.run(["mon", "update", "--tag", "1.0\nEVIL=1"]);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("--tag");
+    expect(readEnv(p.dir)).toBe(NEW_ENV);
+    expect(composeCalls(p.calls()).some((c) => / pull /.test(c))).toBe(false);
+  });
+
+  test("a git checkout, or PGAI_SKIP_COMPOSE_REFRESH=1, keeps its tag unless --tag is given: its compose file is not the CLI's", () => {
+    const git = makeProject("tag-git", NEW_COMPOSE, NEW_ENV);
+    fs.mkdirSync(resolve(git.dir, ".git"));
+    fs.writeFileSync(resolve(tempDir, "tag-git-bin", "git"), '#!/bin/sh\n[ "$1" = rev-parse ] && echo main\nexit 0\n', { mode: 0o755 });
+    const r = git.run(["mon", "update"], { PULL_NEEDS_TAG: "0.18.0" });
+    expect(r.status).toBe(0);
+    expect(readEnv(git.dir)).toMatch(tagLine("0.18.0"));
+    expect(r.stdout).toContain("PGAI_TAG stays 0.18.0: docker-compose.yml here is not refreshed by this CLI (a git checkout)");
+    expect(git.run(["mon", "update", "--tag", "9.9.9"], { PULL_NEEDS_TAG: "9.9.9" }).status).toBe(0);
+    expect(readEnv(git.dir)).toMatch(tagLine("9.9.9"));
+
+    const baked = makeProject("tag-baked", NEW_COMPOSE, NEW_ENV);
+    const b = baked.run(["mon", "update"], { PGAI_SKIP_COMPOSE_REFRESH: "1", PULL_NEEDS_TAG: "0.18.0" });
+    expect(b.status).toBe(0);
+    expect(readEnv(baked.dir)).toMatch(tagLine("0.18.0"));
+    expect(b.stdout).toContain("(PGAI_SKIP_COMPOSE_REFRESH=1)");
+  });
+
+  test("a failed pull puts the old compose file and PGAI_TAG back and changes no container", () => {
+    const stale = staleCompose("pull-fails");
+    const p = makeProject("pull-fails", stale, NEW_ENV);
+    const r = p.run(["mon", "update"], { NEW_RUNNING: "1", PULL_EXIT: "1" });
+    expect(r.status).toBe(1);
+    expect(fs.readFileSync(resolve(p.dir, "docker-compose.yml"), "utf8")).toBe(fs.readFileSync(stale, "utf8"));
+    expect(readEnv(p.dir)).toMatch(tagLine("0.18.0"));
+    expect(composeCalls(p.calls()).some((c) => / (down|up) /.test(c))).toBe(false);
+    expect(r.stderr).toContain(`The pull used PGAI_TAG=${CLI_VERSION}`);
+    expect(r.stderr).toContain("docker-compose.yml and PGAI_TAG=0.18.0 were put back");
+    expect(r.stdout).not.toContain("completed successfully");
+  });
+
+  test("the compose file for the new version cannot be fetched: the tag stays, nothing is pulled, the command fails", () => {
+    const p = makeProject("no-compose", NEW_COMPOSE, NEW_ENV);
+    const r = p.run(["mon", "update"], { NEW_RUNNING: "1", PGAI_COMPOSE_SOURCE: resolve(tempDir, "does-not-exist.yml") });
+    expect(r.status).toBe(1);
+    expect(readEnv(p.dir)).toMatch(tagLine("0.18.0"));
+    expect(composeCalls(p.calls()).some((c) => / (pull|up) /.test(c))).toBe(false);
+    expect(r.stderr).toContain("PGAI_TAG stays 0.18.0");
+  });
+
+  test("a running stack is brought up on the new images with its profiles, after the pull", () => {
+    const p = makeProject("applies-running", staleCompose("applies-running"), `${NEW_ENV}COMPOSE_PROFILES=instance-jobs\n`);
+    const r = p.run(["mon", "update"], { NEW_RUNNING: "1" });
+    expect(r.status).toBe(0);
+    const calls = composeCalls(p.calls());
+    const pull = calls.findIndex((c) => / pull /.test(c));
+    const up = calls.findIndex((c) => / up -d \|/.test(c));
+    expect(pull).toBeGreaterThanOrEqual(0);
+    expect(up).toBeGreaterThan(pull);
+    // Compose reads the profiles from .env itself; the shim sees them here
+    // because bun loads .env into the CLI's environment. What this catches is
+    // an `up` given other profiles, or none of the Grafana password.
+    expect(calls[up]).toContain("|PROFILES=instance-jobs |GF=pw");
+    // One `up` for the whole stack, nothing stopped or removed.
+    expect(calls.filter((c) => / up /.test(c)).length).toBe(1);
+    expect(calls.some((c) => / (down|rm|restart) /.test(c))).toBe(false);
+    expect(r.stdout).toContain(`The stack runs PGAI_TAG=${CLI_VERSION}`);
+    expect(r.stdout).not.toContain("mon start");
+  });
+
+  test("a failed `up` fails the command and does not claim success", () => {
+    const p = makeProject("applies-up-fails", NEW_COMPOSE, NEW_ENV);
+    const r = p.run(["mon", "update"], { NEW_RUNNING: "1", UP_EXIT: "1" });
+    expect(r.status).toBe(1);
+    expect(r.stdout).not.toContain("The stack runs");
+    expect(r.stderr).toContain("did not start on the new images");
+  });
+
+  test("a stopped stack is left stopped, and the output says 'mon start' runs the new images", () => {
+    const p = makeProject("applies-stopped", NEW_COMPOSE, NEW_ENV);
+    const r = p.run(["mon", "update"]);
+    expect(r.status).toBe(0);
+    expect(composeCalls(p.calls()).some((c) => / up /.test(c))).toBe(false);
+    expect(r.stdout).toContain("The stack is not running: 'postgresai mon start' starts it on the new images");
+    expect(r.stdout).not.toContain("The stack runs");
   });
 });
 
@@ -326,7 +444,8 @@ describe("the Grafana password reaches every compose call", () => {
     expect(calls.length).toBeGreaterThan(0);
     for (const c of calls.filter((c) => !/^compose version/.test(c))) expect(c).toEndWith("|GF=pw");
     expect(calls.some((c) => / ps -q pgai-mon /.test(c))).toBe(true);
-    expect(calls.some((c) => / up -d --no-deps instance-jobs /.test(c))).toBe(true);
+    // The update's `up -d` covers instance-jobs through the profile.
+    expect(calls.some((c) => / up -d \|PROFILES=instance-jobs /.test(c))).toBe(true);
     // Not on argv, and not written into .env.
     expect(p.calls().some((c) => c.split(" |")[0].includes("pw"))).toBe(false);
     expect(readEnv(p.dir)).not.toContain("GF_SECURITY_ADMIN_PASSWORD");
