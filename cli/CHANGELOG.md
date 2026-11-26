@@ -56,6 +56,10 @@
 
 ### Changed
 
+- JSON contract 1.3.0: in full (monitoring) mode, a checkup node result without data carries
+  `available` (false: not collected yet, the query failed, or nothing found where those look the
+  same; true: checked, nothing found) and a plain `reason`. Express mode does not emit them.
+  Additive; the schemas accept both as optional.
 - `pgai issues list` returns 50 issues by default (was 20) and prints the total on stderr on every call, so a
   short page is no longer mistaken for the whole list: `Showing 1–43 of 43 open issues.`, or `Showing 1–50 of 120
   open issues. Use --offset 50 for the next page, or --limit 120 for all.` stdout is unchanged (the same JSON array).

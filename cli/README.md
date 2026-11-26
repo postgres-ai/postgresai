@@ -930,8 +930,8 @@ PGPASSWORD=... postgresai checkup \
 
   ```json
   {
-    "H002": { "contract_version": "1.0.0", "checkId": "H002", "...": "..." },
-    "F003": { "contract_version": "1.0.0", "checkId": "F003", "...": "..." }
+    "H002": { "contract_version": "1.3.0", "checkId": "H002", "...": "..." },
+    "F003": { "contract_version": "1.3.0", "checkId": "F003", "...": "..." }
   }
   ```
 
@@ -1056,7 +1056,7 @@ A consumer should accept any report whose `contract_version` shares its **major*
 and has a **minor ≥** the minimum it was built against. Pin the major, tolerate
 additive minors, and treat a major bump as a required review.
 
-The current contract version is **`1.0.0`**.
+The current contract version is **`1.3.0`** (1.1.0: A014 `observed_size`; 1.2.0: A005 and K006–K008 facts and chart data, box only; 1.3.0: in full mode, a node result without data carries `available` and `reason`).
 
 ### Envelope fields
 
@@ -1071,6 +1071,21 @@ Beyond the check-specific `results`, every report includes:
 | `timestamptz` | Report generation time (ISO 8601). |
 | `nodes` | `{ "primary": string, "standbys": string[] }`. |
 | `version` / `build_ts` | CLI/package version and build timestamp (may be null). |
+
+### Node result fields
+
+`results` maps each node name to a node result:
+
+| Field | Meaning |
+|-------|---------|
+| `data` | The check's findings, usually keyed by database. `{}` when there are none. |
+| `postgres_version` | `{ version, server_version_num, server_major_ver, server_minor_ver }` (most checks). |
+| `available` | Full mode only, and only when `data` is empty (contract 1.3.0). `false`: the report cannot say — not collected yet, the query failed, or a metric that records only findings has none. `true`: the check's metric had rows for the node and none was a finding. |
+| `reason` | Full mode only, next to `available`: one plain sentence for the reader. |
+
+Express mode does not emit `available` or `reason`: it queries the database directly, and its
+H00x/F00x results list each database with empty lists when nothing is found. I001 on PostgreSQL < 16
+also has `data.available: false` (no `pg_stat_io`); that field describes the data, not the node.
 
 ## Development
 
