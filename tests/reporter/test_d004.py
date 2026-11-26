@@ -231,3 +231,78 @@ def test_per_round_at_max_only_with_rounds_and_the_maximum(monkeypatch, change):
 def test_an_empty_window_says_it_may_be_a_failed_query(monkeypatch):
     report = box(monkeypatch, {"app": Conn(ANSWERS), "other": Conn(OTHER)}, []).generate_d004_pgstat_settings_report("c", "n1")
     assert "or the query failed" in report["results"]["n1"]["observability"]["monitored_calls_window_error"]
+
+
+STEP_S = {"30s": 30, "1m": 60, "5m": 300, "1h": 3600}
+
+
+class Store(Box):
+    """A store that has kept a 30 s reading of each statement's calls for `age_s` seconds
+    before now, `per_min` calls a minute. A range query answers as VictoriaMetrics (and
+    pgai-mon) do: on a step grid aligned to the step, each point the last reading at most one
+    step old, a series with no point left out."""
+
+    def __init__(self, age_s, per_min=8, statements=2):
+        super().__init__({}, [])
+        self.age_s, self.per_min, self.statements, self.asked = age_s, per_min, statements, []
+
+    def query_range(self, query, start_time, end_time, step="30s"):
+        self.asked.append((step, (end_time - start_time).total_seconds()))
+        s, end = STEP_S[step], int(end_time.timestamp())
+        born = end - self.age_s
+        readings = list(range(born - born % 30 + 30, end + 1, 30))
+        out = []
+        for q in range(self.statements):
+            values = []
+            for t in range(int(start_time.timestamp()) // s * s, end + 1, s):
+                last = [r for r in readings if t - s < r <= t]
+                if last:
+                    values.append([t, str(1000 * (q + 1) + (last[-1] - born) * self.per_min // 60)])
+            if values:
+                out.append({"metric": {"datname": "app", "queryid": str(q)}, "values": values})
+        return out
+
+
+NOW = datetime(2026, 11, 24, 15, 27, tzinfo=timezone.utc)
+
+
+class Clock(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return NOW
+
+
+def store(monkeypatch, age_s):
+    box(monkeypatch, {"app": Conn(ANSWERS), "other": Conn(OTHER)}, [])  # the node read, as on a real box
+    monkeypatch.setattr("reporter.postgres_reports.datetime", Clock)  # where "now" sits on the hourly grid
+    return Store(age_s)
+
+
+@pytest.mark.parametrize("age_min", [13, 45, 86])
+def test_a_box_younger_than_two_hours_still_gets_its_calls_window(monkeypatch, age_min):
+    # The first report runs right after a deploy, on minutes of readings: the hourly grid then
+    # holds at most one reading per statement, while the store has dozens.
+    generator = store(monkeypatch, age_min * 60)
+    report = generator.generate_d004_pgstat_settings_report("c", "n1")
+    validate_report(report)
+    obs = report["results"]["n1"]["observability"]
+    assert "monitored_calls_window_error" not in obs
+    [window] = obs["monitored_calls_window"]
+    assert window["database"] == "app" and window["statements"] == 2
+    span_s = (datetime.fromisoformat(window["end"].replace("Z", "+00:00"))
+              - datetime.fromisoformat(window["start"].replace("Z", "+00:00"))).total_seconds()
+    assert span_s >= (age_min - 2) * 60  # the readings so far, not one hour of them
+    assert window["total"] == pytest.approx(2 * 8 * span_s / 60, abs=2)
+    assert generator.asked == [("1h", 7 * 86400), ("1m", 3 * 3600)]  # never 7 days at one minute
+
+
+def test_a_box_with_a_week_of_readings_asks_the_hourly_grid_only(monkeypatch):
+    generator = store(monkeypatch, 8 * 86400)
+    obs = generator.generate_d004_pgstat_settings_report("c", "n1")["results"]["n1"]["observability"]
+    assert generator.asked == [("1h", 7 * 86400)]
+    assert obs["monitored_calls_window"][0]["days"] == 7.0
+
+
+def test_a_box_with_no_readings_still_says_why(monkeypatch):
+    obs = store(monkeypatch, 0).generate_d004_pgstat_settings_report("c", "n1")["results"]["n1"]["observability"]
+    assert "monitored_calls_window" not in obs and "or the query failed" in obs["monitored_calls_window_error"]
