@@ -64,6 +64,15 @@
     "timestamptz": {
       "type": "string"
     },
+    "scrape_targets": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/scrapeTarget"
+      }
+    },
+    "scrape_targets_error": {
+      "type": "string"
+    },
     "nodes": {
       "$ref": "#/$defs/nodes"
     },
@@ -76,6 +85,62 @@
     }
   },
   "$defs": {
+    "hourlyNumbers": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      }
+    },
+    "counterHours": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end",
+        "total",
+        "hourly"
+      ],
+      "properties": {
+        "start": {
+          "type": "string"
+        },
+        "end": {
+          "type": "string"
+        },
+        "total": {
+          "type": "number"
+        },
+        "hourly": {
+          "$ref": "#/$defs/hourlyNumbers"
+        },
+        "peak_per_s": {
+          "type": "number"
+        },
+        "peak_at": {
+          "type": "string"
+        }
+      }
+    },
+    "scrapeTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "job",
+        "instance",
+        "up"
+      ],
+      "properties": {
+        "job": {
+          "type": "string"
+        },
+        "instance": {
+          "type": "string"
+        },
+        "up": {
+          "type": "integer"
+        }
+      }
+    },
     "nodes": {
       "type": "object",
       "additionalProperties": false,
@@ -397,6 +462,15 @@
         },
         "postgres_version": {
           "$ref": "#/$defs/postgresVersion"
+        },
+        "deadlocks": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/counterHours"
+          }
+        },
+        "deadlocks_error": {
+          "type": "string"
         }
       }
     }
