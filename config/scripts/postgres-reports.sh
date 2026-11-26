@@ -109,10 +109,15 @@ if [[ "${readiness_timeout_seconds}" =~ ^[0-9]+$ ]] && (( readiness_timeout_seco
     "${readiness_timeout_seconds}" "${readiness_poll_seconds}" || true
 fi
 
+# The first run ends its window now. Later runs use the hour-aligned window,
+# which after a fresh start can end before the first sample and leave the
+# query reports (K, M, N001) empty. A failed first run is retried the same way.
+first_run=true
+
 while true; do
   output_path="$(date -u +"${output_template}")"
   reporter_args=(--prometheus-url "${prometheus_url}" --output "${output_path}")
-  if [[ "${use_current_time}" == "true" ]]; then
+  if [[ "${use_current_time}" == "true" || "${first_run}" == "true" ]]; then
     reporter_args+=(--use-current-time)
   fi
 
@@ -144,6 +149,7 @@ while true; do
   fi
 
   if python -m reporter.postgres_reports "${reporter_args[@]}"; then
+    first_run=false
     echo "postgres-reports: sleeping ${interval_seconds}s"
     sleep_seconds "${interval_seconds}"
   else

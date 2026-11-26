@@ -467,3 +467,36 @@ def test_project_name_written_after_start_is_used(tmp_path):
     assert "--project-name 2492" in reports[0]
     assert "--no-upload" not in reports[0]
     assert "project name is required" not in proc.stderr
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("use_current_time", "expected"),
+    [(None, [True, False, False]), ("true", [True, True, True])],
+)
+def test_first_report_ends_now_later_ones_on_the_hour(tmp_path, use_current_time, expected):
+    """The first report runs soon after the stack starts. A window floored to
+    the hour ends before the first sample there, so K/M/N came out empty on
+    every new box (UAT 2026-10-02, real reporter against real pgwatch data:
+    floored K001 `data: {}`, --use-current-time 1 query). The first cycle ends
+    its window now; later ones keep the hour-aligned window unless
+    USE_CURRENT_TIME=true asks for the current time on every cycle.
+    """
+    env = {"REPORTER_READINESS_TIMEOUT_SECONDS": "0"}
+    if use_current_time is not None:
+        env["USE_CURRENT_TIME"] = use_current_time
+    proc, calls, _ = run_loop(tmp_path, stop_after_sleeps=4, python_exit=0, env_extra=env)
+
+    assert proc.returncode == STUB_EXIT_CODE, proc.stderr
+    assert ["--use-current-time" in c.split() for c in calls] == expected
+
+
+@pytest.mark.unit
+def test_a_failed_first_report_is_retried_with_its_window_ending_now(tmp_path):
+    """A failed first run is retried after the back-off: the retry is still the
+    box's first report, so its window still ends now."""
+    proc, calls, _ = run_loop(tmp_path, stop_after_sleeps=3, python_exit=1,
+                              env_extra={"REPORTER_READINESS_TIMEOUT_SECONDS": "0"})
+
+    assert proc.returncode == STUB_EXIT_CODE, proc.stderr
+    assert ["--use-current-time" in c.split() for c in calls] == [True, True]

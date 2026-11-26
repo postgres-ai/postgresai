@@ -411,6 +411,8 @@ services:
       - CF_ACCESS_CLIENT_ID=${CF_ACCESS_CLIENT_ID:-}
       - CF_ACCESS_CLIENT_SECRET=${CF_ACCESS_CLIENT_SECRET:-}
       # Optional overrides:
+      # The first report's window ends at its run time; later reports use the
+      # hour-aligned window (USE_CURRENT_TIME=true: every report ends now).
       # - REPORTER_INITIAL_DELAY_SECONDS=180
       # - REPORTER_READINESS_TIMEOUT_SECONDS=1800 (0 = no wait for data)
       # - REPORTER_READINESS_POLL_SECONDS=15

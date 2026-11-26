@@ -471,6 +471,12 @@
         },
         "deadlocks_error": {
           "type": "string"
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
         }
       }
     }

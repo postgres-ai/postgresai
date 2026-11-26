@@ -609,6 +609,12 @@
         },
         "postgres_version": {
           "$ref": "#/$defs/postgresVersion"
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
         }
       }
     }

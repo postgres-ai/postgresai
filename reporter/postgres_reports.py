@@ -38,7 +38,7 @@ __version__ = "1.0.2"
 #
 # MUST stay identical to CONTRACT_VERSION in cli/lib/checkup.ts. A cross-language
 # test (cli/test/contract-version.test.ts) asserts the two sources cannot drift.
-CONTRACT_VERSION = "1.2.0"
+CONTRACT_VERSION = "1.3.0"
 
 import requests
 import json
@@ -254,6 +254,38 @@ def _one_line(text: str, limit: int) -> str:
 # dropped, so H001/H002/H004 must never recommend removing them (#345).
 _SYSTEM_SCHEMAS = frozenset({"pg_catalog", "information_schema", "pg_toast"})
 _SYSTEM_TEMP_SCHEMA_RE = re.compile(r"^pg_(toast_)?temp_")
+
+
+# Why a report has no data, in words for its reader (UAT 2026-10-01: an empty
+# `data: {}` said nothing). An empty node result gets `available` and `reason`.
+# `available: false`: the report cannot tell "nothing found" from "not collected
+# yet" or "the query failed". `available: true`: the check's source metric had
+# rows for the node and the report kept none of them; the generator passes that
+# evidence as `collected=True`.
+_QUERY_STATS_REASON = (
+    "No query statistics in the window. The monitoring records a query from pg_stat_statements once it has "
+    "run at least 3 times and for 1 s in total, so an idle or newly connected database has none yet."
+)
+EMPTY_REPORT_REASONS = {
+    **{check_id: _QUERY_STATS_REASON for check_id in ("K001", "K003", "K004", "K005", "K006", "K007", "K008", "M001", "M002", "M003")},
+    "N001": "No active-session samples in the window: no session was active when sampled, or the collection has not run yet.",
+    # initdb writes non-default settings, so a server always has some: none means none collected.
+    "A007": "No settings in the collected metrics: the collection has not run yet, or the metrics query failed.",
+    # The metrics below have a row only for what they find, so no row is also what "nothing found" looks like.
+    "F004": "No table bloat estimate in the collected metrics: no table is larger than 1 MiB, the collection has not run yet, or the metrics query failed.",
+    "F005": "No index bloat estimate in the collected metrics: no B-tree index is larger than 1 MiB, the collection has not run yet, or the metrics query failed.",
+    "H001": "No invalid index in the collected metrics: there is none, the collection has not run yet, or the metrics query failed.",
+    "H002": "No unused index in the collected metrics: there is none, the collection has not run yet, or the metrics query failed.",
+    "H004": "No redundant index in the collected metrics: there is none, the collection has not run yet, or the metrics query failed.",
+}
+_DEFAULT_EMPTY_REASON = "No data for this check in the collected metrics yet."
+# The source metric had rows for the node, and the report dropped them all (system-schema indexes).
+# F004/F005 keep every row they read, so for them rows always mean data.
+FOUND_NOTHING_REASONS = {
+    "H001": "No invalid indexes found in the collected metrics.",
+    "H002": "No unused indexes found in the collected metrics.",
+    "H004": "No redundant indexes found in the collected metrics.",
+}
 
 
 def is_system_schema(name: Any) -> bool:
@@ -1628,6 +1660,7 @@ class PostgresReportGenerator:
                 database_sizes[db_name] = size_bytes
 
         invalid_indexes_by_db = {}
+        collected = False  # the invalid-index metric had rows for this node
         for db_name in databases:
             # Fetch index definitions from the sink for this database (used to aid remediation)
             index_definitions = self.get_index_definitions_from_sink(db_name)
@@ -1645,6 +1678,7 @@ class PostgresReportGenerator:
             indexes_data: Dict[tuple, Dict[str, Any]] = {}
 
             if size_result.get('status') == 'success' and size_result.get('data', {}).get('result'):
+                collected = True
                 for item in size_result['data']['result']:
                     schema_name = item['metric'].get('schema_name', 'unknown')
                     table_name = item['metric'].get('table_name', 'unknown')
@@ -1742,6 +1776,7 @@ class PostgresReportGenerator:
             invalid_indexes_by_db,
             node_name,
             postgres_version=self._get_postgres_version_info(cluster, node_name),
+            collected=collected,
         )
 
     # H002 window: 0 scans in every monitored reading over the lookback (protocols
@@ -1869,6 +1904,7 @@ class PostgresReportGenerator:
                 postmaster_startup_time = datetime.fromtimestamp(postmaster_startup_epoch).isoformat()
 
         unused_indexes_by_db = {}
+        collected = False  # the unused-index metric had rows for this node
         for db_name in databases:
             # Get index definitions from Postgres sink database for this specific database
             index_definitions = self.get_index_definitions_from_sink(db_name)
@@ -1903,6 +1939,7 @@ class PostgresReportGenerator:
 
             unused_indexes = []
             if unused_result.get('status') == 'success' and unused_result.get('data', {}).get('result'):
+                collected = True
                 for item in unused_result['data']['result']:
                     schema_name = item['metric'].get('schema_name', 'unknown')
                     table_name = item['metric'].get('table_name', 'unknown')
@@ -1983,6 +2020,7 @@ class PostgresReportGenerator:
             unused_indexes_by_db,
             node_name,
             postgres_version=self._get_postgres_version_info(cluster, node_name),
+            collected=collected,
         )
 
     # H004 readings: the scan counter of each candidate at its first monitored reading in the
@@ -2127,6 +2165,7 @@ class PostgresReportGenerator:
                     source_sizes[result['metric']['dbname']] = size_bytes
 
         redundant_indexes_by_db = {}
+        collected = False  # the redundant-index metric had rows for this node
         for db_name in databases:
             # Fetch index definitions from the sink for this database (used to aid remediation)
             index_definitions = self.get_index_definitions_from_sink(db_name)
@@ -2152,6 +2191,7 @@ class PostgresReportGenerator:
             real_db = db_name
 
             if candidates:
+                collected = True
                 for item in candidates:
                     schema_name = item['metric'].get('schema_name', 'unknown')
                     table_name = item['metric'].get('table_name', 'unknown')
@@ -2269,6 +2309,7 @@ class PostgresReportGenerator:
             redundant_indexes_by_db,
             node_name,
             postgres_version=self._get_postgres_version_info(cluster, node_name),
+            collected=collected,
         )
 
     def generate_d004_pgstat_settings_report(self, cluster: str = "local", node_name: str = "node-01") -> Dict[
@@ -6548,7 +6589,8 @@ class PostgresReportGenerator:
 
     def format_report_data(self, check_id: str, data: Dict[str, Any], host: str = "target-database",
                           all_hosts: Dict[str, List[str]] = None,
-                          postgres_version: Dict[str, str] = None) -> Dict[str, Any]:
+                          postgres_version: Dict[str, str] = None,
+                          collected: bool = False) -> Dict[str, Any]:
         """
         Format data to match template structure.
 
@@ -6558,6 +6600,8 @@ class PostgresReportGenerator:
             host: Primary host identifier (used if all_hosts not provided)
             all_hosts: Optional dict with 'primary' and 'standbys' keys for multi-node reports
             postgres_version: Optional Postgres version info to include at report level
+            collected: The check's source metric had rows for the node. Only then does an
+                empty report say "nothing found" (`available: true`).
 
         Returns:
             Dictionary formatted for templates
@@ -6586,6 +6630,15 @@ class PostgresReportGenerator:
             if postgres_version:
                 node_result["postgres_version"] = postgres_version
             results = {host: node_result}
+
+        for node_result in results.values():
+            # A node result taken from a per-node report keeps the annotation it got there.
+            if isinstance(node_result, dict) and not node_result.get("data") and "available" not in node_result:
+                if collected and check_id in FOUND_NOTHING_REASONS:
+                    node_result["available"], node_result["reason"] = True, FOUND_NOTHING_REASONS[check_id]
+                else:
+                    node_result["available"] = False
+                    node_result["reason"] = EMPTY_REPORT_REASONS.get(check_id, _DEFAULT_EMPTY_REASON)
 
         template_data = {
             "contract_version": CONTRACT_VERSION,
