@@ -397,6 +397,21 @@ class PostgresReportGenerator:
         'max_parallel_workers_per_gather',
         'max_parallel_maintenance_workers',
     ]
+    #: G001 also carries every setting of these pg_settings categories (matched whole, as PromQL's
+    #: =~; PostgreSQL 18 moved the worker, I/O and vacuum settings, both names are here) and these
+    #: memory settings of other categories, per node: what CheckupLoop's live G001 set read from
+    #: the box (protocols G001-O1 "every memory setting"; postgresai#537).
+    G001_CATEGORIES = (
+        "Resource Usage / .*|Autovacuum|Vacuuming / (Automatic Vacuuming|Cost-Based Vacuum Delay)|"
+        "Write-Ahead Log / Checkpoints|Lock Management|"
+        "Client Connection Defaults / Shared Library Preloading|"
+        "Connections and Authentication / Connection Settings"
+    )
+    G001_NAMES = (
+        "effective_cache_size", "wal_buffers", "shared_memory_size", "shared_memory_size_in_huge_pages",
+        "huge_pages_status", "wal_decode_buffer_size", "track_activity_query_size", "max_wal_senders",
+        "max_replication_slots", "max_logical_replication_workers", "max_active_replication_origins",
+    )
 
     #: G001 window for connection peaks, server starts and host memory.
     G001_WINDOW = "7d"
@@ -3283,13 +3298,11 @@ class PostgresReportGenerator:
         _esc = self._escape_promql_label
         logger.info("Generating G001 Memory-related Settings report...")
 
-        memory_settings = self.G001_SETTINGS
-
         # Query all PostgreSQL settings for memory-related settings using last_over_time
         settings_query = f'last_over_time(pgwatch_settings_configured{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         result = self.query_instant(settings_query)
 
-        memory_data = {}
+        node_settings = {}
         if result.get('status') == 'success' and result.get('data', {}).get('result'):
             for item in result['data']['result']:
                 setting_name = item['metric'].get('setting_name', '')
@@ -3298,28 +3311,29 @@ class PostgresReportGenerator:
                 if not setting_name:
                     continue
 
-                # Filter for memory-related settings
-                if setting_name in memory_settings:
-                    setting_value = item['metric'].get('setting_value', '')
-                    category = item['metric'].get('category', 'Memory')
-                    unit = item['metric'].get('unit', '')
-                    context = item['metric'].get('context', '')
-                    vartype = item['metric'].get('vartype', '')
+                setting_value = item['metric'].get('setting_value', '')
+                category = item['metric'].get('category', 'Memory')
+                unit = item['metric'].get('unit', '')
+                context = item['metric'].get('context', '')
+                vartype = item['metric'].get('vartype', '')
 
-                    memory_data[setting_name] = {
-                        "setting": setting_value,
-                        "unit": unit,
-                        "category": category,
-                        "context": context,
-                        "vartype": vartype,
-                        "pretty_value": self.format_setting_value(setting_name, setting_value, unit)
-                    }
+                node_settings[setting_name] = {
+                    "setting": setting_value,
+                    "unit": unit,
+                    "category": category,
+                    "context": context,
+                    "vartype": vartype,
+                    "pretty_value": self.format_setting_value(setting_name, setting_value, unit)
+                }
         else:
             logger.warning(f"G001 - No settings data returned for cluster={cluster}, node_name={node_name}")
+        memory_data = self._g001_settings(node_settings)
 
         # Calculate some memory usage estimates and recommendations
         memory_analysis = self._analyze_memory_settings(memory_data)
         data = {"settings": memory_data, "analysis": memory_analysis}
+        if self._g001_scope_holds(node_settings):
+            data["settings_scope"] = self._g001_settings_scope()
         activity = self._g001_activity(cluster, node_name)
         if activity:
             data["activity"] = activity
@@ -3330,6 +3344,33 @@ class PostgresReportGenerator:
             node_name,
             postgres_version=self._get_postgres_version_info(cluster, node_name),
         )
+
+    def _g001_settings(self, node_settings: Dict[str, Any]) -> Dict[str, Any]:
+        """One node's settings that G001 carries: G001_SETTINGS, G001_NAMES and every setting of
+        G001_CATEGORIES, as the node has them."""
+        names = set(self.G001_SETTINGS) | set(self.G001_NAMES)
+        categories = re.compile(self.G001_CATEGORIES)
+        return {name: info for name, info in sorted(node_settings.items())
+                if name in names or (isinstance(info, dict)
+                                     and categories.fullmatch(str(info.get('category') or '')))}
+
+    #: The category a settings row gets when its metric has none (A003: 'Other'; the direct path:
+    #: 'Memory'): never a pg_settings category.
+    G001_NO_CATEGORY = frozenset({"", "Other", "Memory"})
+
+    def _g001_scope_holds(self, node_settings: Dict[str, Any]) -> bool:
+        """``settings_scope`` may be written: the node's settings were read, each with its
+        pg_settings category. Else a category's settings could be missing unseen, and a file
+        without the scope makes CheckupLoop ask the box, as for an older file."""
+        return bool(node_settings) and all(
+            isinstance(info, dict) and str(info.get('category') or '') not in self.G001_NO_CATEGORY
+            for info in node_settings.values())
+
+    def _g001_settings_scope(self) -> Dict[str, Any]:
+        """What ``settings`` covers. A file without it is older (G001_SETTINGS only), or its
+        settings could not be read whole (``_g001_scope_holds``)."""
+        return {"categories": self.G001_CATEGORIES,
+                "names": sorted(set(self.G001_SETTINGS) | set(self.G001_NAMES))}
 
     def _analyze_memory_settings(self, memory_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -3442,7 +3483,8 @@ class PostgresReportGenerator:
         """What G001 sets the memory settings against, over G001_WINDOW (or since
         the data began): the monitored databases, connections and active statements (peak, when it was
         last reached, mean, samples), the applications with the most connections
-        at their own peak, server starts, statistics resets and fatal session ends, and the host's memory
+        at their own peak, server starts, statistics resets and fatal session ends, each database's
+        temporary files (G001-R3, ``_g001_temp_files``), and the host's memory
         when host metrics are collected (protocols G001-O2, O4). A key whose
         series is empty is left out; {} when nothing could be read.
 
@@ -3533,11 +3575,15 @@ class PostgresReportGenerator:
         # Fatal session ends only: sessions an operator ended or a client dropped are no
         # memory signal, and a report read "killed" as out-of-memory kills.
         for key in ("sessions_fatal",):
-            value = first(f'sum(increase(pgwatch_db_stats_{key}{{{sel}}}[{win}]))')
+            value = first(f'sum({self._g001_rise(f"pgwatch_db_stats_{key}", sel, win)})')
             if value is not None:
                 server[key] = int(round(value))
         if server:
             out["server"] = server
+
+        temp_files = self._g001_temp_files(sel, win, out.get("databases") or [])
+        if temp_files:
+            out["temp_files"] = temp_files
 
         total = first(f'max(last_over_time(host_os_memory_total_bytes{{{sel}}}[3h]))')
         available = f'100 * host_memory_available_bytes{{{sel}}} / host_os_memory_total_bytes{{{sel}}}'
@@ -3552,6 +3598,55 @@ class PostgresReportGenerator:
                 memory["available_p5_pct"] = round(p5, 2)
             out["host_memory"] = memory
         return out
+
+    @staticmethod
+    def _g001_rise(metric: str, sel: str, win: str) -> str:
+        """A per-database counter's rise over the window: the sum of its per-step rises, a drop
+        counted as 0, as F004 counts. increase() does not hold on VictoriaMetrics: a series that
+        starts inside the window (a new box, a new database) is counted from 0, so what it had
+        before the window would count as in it. A floor: a series' first 5 minutes and the step of a
+        counter reset are not counted; a gap in monitoring is bridged, so one that straddles the
+        window start counts whole."""
+        now = f'max by (datname) ({metric}{{{sel}}})'
+        prev = f'max by (datname) (last_over_time({metric}{{{sel}}}[{win}] offset 5m) and {metric}{{{sel}}})'
+        return f'sum_over_time(clamp_min({now} - {prev}, 0)[{win}:5m])'
+
+    G001_TEMP_NOT_KNOWN = "monitoring has fewer than two readings of the counter at least 5 minutes apart in the window"
+    G001_TEMP_NOT_ANSWERED = "monitoring did not answer the query"
+
+    def _g001_temp_files(self, sel: str, win: str, databases: Sequence[str]) -> List[Dict[str, Any]]:
+        """Each database's temporary-file bytes and count over the window (pg_stat_database; protocols
+        G001-R3: a work_mem raise needs temp-file evidence). A counter with fewer than two readings
+        in the window, or a failed query, is not known (``<key>_error``), never 0. The databases:
+        ``databases`` (monitored now) and any other with a reading in the window (dropped since),
+        except the excluded databases."""
+        def by_db(query: str) -> Optional[Dict[str, float]]:
+            result = self.query_instant(query)
+            if result.get('status') != 'success':
+                return None
+            out: Dict[str, float] = {}
+            for row in (result.get('data') or {}).get('result') or []:
+                value = self._f001_number(row)
+                if value is not None:
+                    out[(row.get('metric') or {}).get('datname') or ''] = value
+            return out
+
+        metrics = (("bytes", "pgwatch_db_stats_temp_bytes"), ("files", "pgwatch_db_stats_temp_files"))
+        answers = {key: (by_db(f'max by (datname) (count_over_time({metric}{{{sel}}}[{win}]))'),
+                         by_db(self._g001_rise(metric, sel, win)))
+                   for key, metric in metrics}
+        seen = {db for readings, _ in answers.values() for db in (readings or {})}
+        names = (set(databases) | seen) - {''} - set(self.excluded_databases)
+        rows: Dict[str, Dict[str, Any]] = {db: {"database": db} for db in sorted(names)}
+        for key, (readings, grown) in answers.items():
+            for db, row in rows.items():
+                if readings is None or grown is None:
+                    row[f"{key}_error"] = self.G001_TEMP_NOT_ANSWERED
+                elif readings.get(db, 0) >= 2 and db in grown:
+                    row[key] = int(round(grown[db]))
+                else:
+                    row[f"{key}_error"] = self.G001_TEMP_NOT_KNOWN
+        return list(rows.values())
 
     def generate_f004_heap_bloat_report(self, cluster: str = "local", node_name: str = "node-01") -> Dict[str, Any]:
         """
@@ -6425,8 +6520,17 @@ class PostgresReportGenerator:
         """
         print("Generating G001 from A003 data...")
 
-        # Filter A003 settings for G001-relevant settings
-        memory_data = self.filter_a003_settings(a003_report, self.G001_SETTINGS)
+        # This node's settings when A003 has the node (filter_a003_settings merges every node, so
+        # each node would carry the last node's values); else every node's, as before.
+        results = a003_report.get('results', {}) or {}
+        own_node = node_name in results
+        if own_node:
+            node_settings = (results[node_name] or {}).get('data', {}) or {}
+        else:  # never this node's own values: no settings_scope below
+            node_settings = {}
+            for node_data in results.values():
+                node_settings.update((node_data or {}).get('data', {}) or {})
+        memory_data = self._g001_settings(node_settings)
 
         # Calculate memory analysis
         memory_analysis = self._analyze_memory_settings(memory_data)
@@ -6434,6 +6538,8 @@ class PostgresReportGenerator:
         # Extract postgres version from A003
         postgres_version = self.extract_postgres_version_from_a003(a003_report, node_name)
         data = {"settings": memory_data, "analysis": memory_analysis}
+        if own_node and self._g001_scope_holds(node_settings):
+            data["settings_scope"] = self._g001_settings_scope()
         activity = self._g001_activity(cluster, node_name) if cluster is not None else {}
         if activity:
             data["activity"] = activity
