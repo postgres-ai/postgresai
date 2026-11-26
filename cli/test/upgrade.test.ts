@@ -628,11 +628,16 @@ describe("in-place upgrade compose refresh (non-git npx upgrade)", () => {
     fs.writeFileSync(resolve(testDir, ".env"), "PGAI_TAG=0.14.0\n");
     fs.writeFileSync(resolve(testDir, "docker-compose.yml"), STALE_COMPOSE);
     fs.writeFileSync(resolve(testDir, "instances.yml"), "# instances\n- name: keep-me\n");
+    // A docker whose every call succeeds: a failed pull would put the old compose back.
+    const bin = resolve(testDir, "bin");
+    fs.mkdirSync(bin);
+    fs.writeFileSync(resolve(bin, "docker"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
 
     runCliInDir(["mon", "update"], testDir, {
       NODE_ENV: "test",
       PGAI_TAG: undefined,
       PGAI_COMPOSE_SOURCE: targetComposePath,
+      PATH: `${bin}:${process.env.PATH}`,
     });
 
     const after = fs.readFileSync(resolve(testDir, "docker-compose.yml"), "utf8");

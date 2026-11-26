@@ -305,12 +305,13 @@ What `mon update` does:
 |---|---|
 | Migrates `.env` | Adds keys the new stack requires. Existing values, secrets and `instances.yml` are kept. |
 | Refreshes `docker-compose.yml` | On installs that are not a git checkout. The old file is saved as `docker-compose.yml.bak-<oldtag>-<hash>`. |
-| Pulls images | For the `PGAI_TAG` in `.env`. |
-| Restarts | Same stack: it prints `postgresai mon restart` for you to run. Old stack to `pgai-mon`: see below. |
+| Sets `PGAI_TAG` | To this CLI's version, as `mon local-install` does, and prints `PGAI_TAG in .env: <old> -> <new>`. `--tag <tag>` runs another tag (the compose file still moves to the CLI's version). On a git checkout, or with `PGAI_SKIP_COMPOSE_REFRESH=1`, the compose file is not the CLI's, so the tag changes only with `--tag`. |
+| Pulls images | For that `PGAI_TAG`. If the pull fails, the old `docker-compose.yml` and `PGAI_TAG` are put back and no container is re-created. |
+| Applies them | A running stack: `docker compose up -d` re-creates the services that changed and those that depend on them, and starts any service of the stack that is stopped. Data volumes are kept. A stopped stack stays stopped: `postgresai mon start` starts it on the new images. Old stack to `pgai-mon`: see below. |
 
-Between versions of the same stack `mon update` does not change `PGAI_TAG`: edit `.env` in the
-monitoring directory (typically `~/.postgres_ai/`) and set it to the new version before you run
-`mon update`.
+If the `docker-compose.yml` of the new version cannot be fetched, `mon update` keeps the compose
+file and `PGAI_TAG`, pulls nothing and fails: new images with the old compose file would not work
+together.
 
 ### Upgrading from the pgwatch + VictoriaMetrics stack
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `postgresai mon update` now updates the stack to the CLI's version. Before, it kept the old `PGAI_TAG` and pulled the old images, while it refreshed `docker-compose.yml` to the new version. On a running stack it then said to run `mon start`, which refused there. Now it sets `PGAI_TAG` to the CLI's version, as `mon local-install` does (`--tag <tag>` runs another tag). On a running stack it runs `docker compose up -d` with the stack's profiles, so the containers run the new images; data volumes are kept. A stopped stack stays stopped. If the pull fails, the old compose file and tag are put back. If the new compose file cannot be fetched, the compose file and tag stay and nothing is pulled. On a git checkout or with `PGAI_SKIP_COMPOSE_REFRESH=1` the tag changes only with `--tag` (postgres-ai/postgresai#536).
+
 - Monitoring v4 picks up an `instances.yml` that a tool replaced on the host (`sed -i`, Ansible, `mv`). Compose mounts the file on its own, and such a mount kept the old file, so pgai-mon and the reporter went on with the old targets until a restart. Now pgai-mon (within 30 s), the reporter (before its next run) and instance-jobs (`.pgwatch-config`, before its next poll) log it and exit with code 75, and Docker restarts them with the new file. An edit in place is still re-read without a restart (postgres-ai/postgresai#523).
 
 - Monitoring v4's reporter fetches each per-query file metric for up to 100 statements of a node in one query, instead of one query per statement and database. On a 2 vCPU box with a PG 17 primary, its standby and a PG 13 primary, a report run takes 5.6 minutes instead of 13.5, and its per-query files 22 seconds instead of 9 minutes; the files are unchanged (postgres-ai/postgresai#524).
