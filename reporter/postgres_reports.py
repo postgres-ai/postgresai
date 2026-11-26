@@ -359,6 +359,10 @@ class PostgresReportGenerator:
     D001_WINDOW_DAYS = 7
     #: The window over which D004 checks that the statement statistics grow.
     D004_WINDOW_DAYS = 7
+    #: The hourly grid of that window holds one reading or none in a box's first one to two hours
+    #: (the store aligns the steps to the hour), so such a box is read over this last stretch at
+    #: a one-minute step instead.
+    D004_YOUNG_BOX_HOURS = 3
 
     G001_SETTINGS = [
         'shared_buffers',
@@ -2310,8 +2314,10 @@ class PostgresReportGenerator:
                      kcache_status: Dict[str, Any], postgres_version: Optional[Dict[str, str]]) -> Dict[str, Any]:
         """The D004 file: the monitoring part as before, plus what an extension decision needs
         (reporter/d004.py) under `observability`: read from the node as for A005, and the rise of
-        the monitored statements' calls over the last D004_WINDOW_DAYS. A fact that cannot be read
-        is left out with its reason, never written as none."""
+        the monitored statements' calls over the last D004_WINDOW_DAYS (while the hourly readings give
+        no window, as in a box's first one to two hours: its last D004_YOUNG_BOX_HOURS at one
+        minute). A fact that cannot be read is left out with its reason,
+        never written as none."""
         facts: Dict[str, Any] = {}
         conn_str = None
         try:
@@ -2336,6 +2342,12 @@ class PostgresReportGenerator:
             query = f'pgwatch_pg_stat_statements_calls{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}'
             windows = d004_facts.monitored_calls_window(self.query_range(query, start, end, step="1h"),
                                                         d001_facts.counter_window)
+            # No hourly window: a young box (the first file is written right after a deploy), or
+            # the query failed (query_range answers [] then too).
+            if not windows:
+                recent = end - timedelta(hours=self.D004_YOUNG_BOX_HOURS)
+                windows = d004_facts.monitored_calls_window(self.query_range(query, recent, end, step="1m"),
+                                                            d001_facts.counter_window)
         except Exception as err:  # monitoring: recorded, the file and the other reports go on
             windows = None
             facts["monitored_calls_window_error"] = a005_facts.error_text(err)
