@@ -306,6 +306,8 @@ pub struct Reader {
     pub eval: crate::eval::EvalHandle,
     dict: Mutex<crate::dictionary::Dictionary>,
     bounded_macros: std::sync::OnceLock<(std::collections::HashSet<String>, std::collections::HashSet<String>)>,
+    /// Safe macros whose bodies read statement texts (readset::text_deps counts them TEXTS_ALL).
+    text_macros: std::sync::OnceLock<std::collections::HashSet<String>>,
     bounded_relations: std::sync::OnceLock<std::collections::HashSet<String>>,
     /// Scalar functions whose result can change between runs of the same SQL at the same
     /// catalog generation (DuckDB's own stability metadata plus clock functions it labels
@@ -734,6 +736,7 @@ impl Reader {
             views_sql,
             dict: Mutex::new(crate::dictionary::Dictionary::new(dict)),
             bounded_macros: Default::default(),
+            text_macros: Default::default(),
             bounded_relations: Default::default(),
             mirror,
         };
@@ -990,19 +993,45 @@ impl Reader {
             // Canonical text alone does not prove what an overridden function reads.
             let shadowed: bool = admin.query_row(
                 "SELECT count(*) > 0 FROM duckdb_functions() WHERE function_type IN ('macro', 'table_macro') \
-                 AND lower(function_name) IN ('min', 'max', 'read_parquet', 'range', 'error')",
+                 AND lower(function_name) IN ('min', 'max', 'arg_max', 'read_parquet', 'range', 'error')",
                 [],
                 |r| r.get(0),
             )?;
-            let verified = !shadowed
-                && reference
+            let same = |reference: &Option<String>, actual: &str| {
+                reference
                     .as_ref()
                     .and_then(|sql| sql.split_once(" AS "))
-                    .is_some_and(|(_, body)| actual.split_once(" AS ").is_some_and(|(_, actual)| actual == body));
-            let _ = self.bounded_relations.set(if verified {
-                ["query_texts".to_string()].into_iter().collect()
-            } else {
-                Default::default()
+                    .is_some_and(|(_, body)| actual.split_once(" AS ").is_some_and(|(_, actual)| actual == body))
+            };
+            let verified = !shadowed && same(&reference, &actual);
+            // query_text_names reads query_texts only: verified when query_texts is and its own
+            // definition is the embedded one
+            let names_verified = verified && {
+                let definition = EMBEDDED_VIEWS_SQL
+                    .split("CREATE OR REPLACE VIEW query_text_names AS")
+                    .nth(1)
+                    .and_then(|d| d.split(';').next())
+                    .unwrap_or("");
+                let reference = if !definition.is_empty()
+                    && admin
+                        .execute_batch(&format!("CREATE TEMP VIEW _pgai_cache_text_names AS {definition}"))
+                        .is_ok()
+                {
+                    let reference = view_sql("_pgai_cache_text_names").ok();
+                    admin.execute_batch("DROP VIEW _pgai_cache_text_names")?;
+                    reference
+                } else {
+                    None
+                };
+                same(&reference, &view_sql("query_text_names").unwrap_or_default())
+            };
+            let _ = self.bounded_relations.set(match (verified, names_verified) {
+                (true, true) => ["query_texts", "query_text_names"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+                (true, false) => ["query_texts".to_string()].into_iter().collect(),
+                _ => Default::default(),
             });
         }
         if let Some(m) = &self.mirror {
@@ -1070,13 +1099,28 @@ impl Reader {
                 break;
             }
         }
+        // macros (also through other macros) whose bodies name a text view
+        let mut text = std::collections::HashSet::new();
+        loop {
+            let before = text.len();
+            for (name, tree) in &trees {
+                if safe.contains(name) && crate::readset::text_deps(tree, &text) > crate::readset::TEXTS_NONE {
+                    text.insert(name.clone());
+                }
+            }
+            if text.len() == before {
+                break;
+            }
+        }
+        let _ = self.text_macros.set(text);
         let _ = self.bounded_macros.set((names, safe));
         Ok(())
     }
 
     /// Check that `sql` is exactly one SELECT, using DuckDB's parser.
-    /// Ok((cacheable, bounded evaluator dependencies)) for a single read-only SELECT.
-    fn check_read_only(&self, conn: &Connection, sql: &str) -> Result<(bool, bool), QueryError> {
+    /// Ok((cacheable, bounded evaluator dependencies, statement-text dependency)) for a single
+    /// read-only SELECT.
+    fn check_read_only(&self, conn: &Connection, sql: &str) -> Result<(bool, bool, u8), QueryError> {
         let j: String = conn
             .query_row("SELECT json_serialize_sql(?::VARCHAR)::VARCHAR", [sql], |r| r.get(0))
             .map_err(|e| classify(&e))?;
@@ -1111,7 +1155,11 @@ impl Reader {
         let bounded = self.bounded_macros.get().is_some_and(|(names, safe)| {
             crate::readset::bounded_sql(&v["statements"], names, safe, self.bounded_relations.get().unwrap())
         });
-        Ok((ast_cacheable(&v["statements"], &self.volatile), bounded))
+        let texts = match self.text_macros.get() {
+            Some(m) => crate::readset::text_deps(&v["statements"], m),
+            None => crate::readset::TEXTS_ALL,
+        };
+        Ok((ast_cacheable(&v["statements"], &self.volatile), bounded, texts))
     }
 
     /// Run one read-only query under the limits. Blocking; call from a blocking thread.
@@ -1161,7 +1209,7 @@ impl Reader {
             return Err(QueryError::new("parse_error", "empty query"));
         }
         let t_chk = Instant::now();
-        let (cacheable, bounded) = self.check_read_only(conn, &body)?;
+        let (cacheable, bounded, texts) = self.check_read_only(conn, &body)?;
         let t_chk = t_chk.elapsed();
 
         // Timeout: a watchdog thread interrupts the connection at the deadline.
@@ -1183,7 +1231,10 @@ impl Reader {
         let alone = ACTIVE.fetch_add(1, Ordering::AcqRel) == 0;
         crate::readset::reset();
         let res = self.run_inner(conn, &body, fmt);
-        let range = crate::readset::take().filter(|_| bounded);
+        let range = crate::readset::take().filter(|_| bounded).map(|mut r| {
+            r.texts = texts;
+            r
+        });
         ACTIVE.fetch_sub(1, Ordering::AcqRel);
         let s3 = match (s3_0, crate::objstore::totals()) {
             (Some(a), Some(b)) => {

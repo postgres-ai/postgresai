@@ -275,10 +275,11 @@ pub fn child_main(spec_path: &Path) -> anyhow::Result<()> {
                 };
                 let range = range.map_or(String::new(), |r: crate::readset::ReadRange| {
                     format!(
-                        ",\"r\":[{},{}],\"rp\":{}",
+                        ",\"r\":[{},{}],\"rp\":{},\"rt\":{}",
                         r.start,
                         r.end,
-                        serde_json::to_string(&r.prefixes).unwrap()
+                        serde_json::to_string(&r.prefixes).unwrap(),
+                        r.texts
                     )
                 });
                 let _ = match res {
@@ -448,6 +449,7 @@ pub fn parse_reply_s3(mut line: String) -> Option<(u64, Option<[u64; 4]>, Result
             start: a.parse().ok()?,
             end: b.parse().ok()?,
             prefixes: None,
+            texts: crate::readset::TEXTS_ALL,
         });
         after = &c[end + 1..];
     }
@@ -456,6 +458,12 @@ pub fn parse_reply_s3(mut line: String) -> Option<(u64, Option<[u64; 4]>, Result
         let prefixes = values.next()?.ok()?;
         range.as_mut()?.prefixes = prefixes;
         after = &c[values.byte_offset()..];
+    }
+    // absent (an older reader): every text file may change the answer
+    if let Some(c) = after.strip_prefix(",\"rt\":") {
+        let (v, n) = num(c)?;
+        range.as_mut()?.texts = v.min(crate::readset::TEXTS_ALL as u64) as u8;
+        after = &c[n..];
     }
     if let Some(c) = after.strip_prefix(",\"rc\":") {
         let (v, n) = num(c)?;

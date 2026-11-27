@@ -1327,6 +1327,8 @@ mod tests {
             registered: false,
             ver: 0,
             series_prefixes: None,
+            replaces: vec![],
+            texts_refresh_only: false,
         };
         let jan1 = crate::store::chrono_free::days_from_civil(2026, 1, 1);
         assert_eq!(last_day(&f(crate::eval::rollup::KIND_1D, jan1)), jan1 + 30);

@@ -2043,6 +2043,8 @@ pub fn update_tier(
             registered: false,
             ver: VER,
             series_prefixes: None,
+            replaces: vec![],
+            texts_refresh_only: false,
         });
         cat.save(&shared.root)?;
         shared.generation.store(cat.generation, Ordering::Release);

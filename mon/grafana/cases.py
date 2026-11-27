@@ -8,6 +8,9 @@ step=300000), cluster, node, db, and the case's own params.
 
 Result contract for SQL: a `value` column, a `t` column (epoch ms) for range queries, and labels
 either as a `labels` MAP or as plain VARCHAR columns (columns starting with '_' are ignored).
+`keyed=True` (as dash/ash_by.sql): the SQL ends with `SELECT <its columns> FROM r JOIN names USING
+(k)`, points r(k, t, value) and one names row per series (every other column); compile.py builds
+legends from `names` once per series instead of once per point.
 """
 
 CASES = []
@@ -33,7 +36,7 @@ for m, has_per_call in D1_METRICS:
         top = f"topk($top_n, {ir})"
         CASES.append(dict(
             id=f"D1/{m}{'_per_call' if per_call else '_per_s'}", kind="range", windows=DASH_WINDOWS, mode="topk",
-            sql_file="sql/reports/d1_query_analysis_topn.sql",
+            sql_file="sql/reports/d1_query_analysis_topn.sql", keyed=True,
             params={"metric": f"pgwatch_pg_stat_statements_{m}", "per_call": per_call, "top_n": 10,
                     "db_re": "target_database|postgres"},
             promql=f"({top} * on(queryid) {_GL} {_INFO}) or ({top} unless on(queryid) {_INFO})"))

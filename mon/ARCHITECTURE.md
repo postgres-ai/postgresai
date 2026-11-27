@@ -146,14 +146,24 @@ client ─► POST /sql ─► auth ─► result cache ─► admission ─► 
    added file unrelated. Hash collisions and missing metadata remain conservative. Related
    added samples must start after the full fetch end; same-day series additions still
    invalidate because label-only evaluator calls can expose them without matching samples.
-   Evaluator file removal or replacement, registry changes and rollup changes invalidate.
+   Evaluator file removal or replacement, registry changes and rollup changes invalidate, except a
+   content-preserving merge: its output lists the input file ids (`replaces`); when every input was
+   in the old snapshot and leaves in this delta (same kind and day), the output and its inputs are
+   skipped (`kept_replaced`). The server polls the catalog every 500 ms, not only when requests arrive,
+   so a merge is judged against the snapshot just before it (a merge landing in the same poll as
+   its inputs' flush stays conservative). Equal-timestamp samples are evaluated in a canonical order, so a
+   merge cannot change an answer through file order.
    The parent compares file snapshots once per catalog generation; entries store no file
    lists and their dependency metadata counts toward the cache byte limit.
    Evaluator queries may join the built-in `query_texts` view, as D02 does. The reader verifies
    its definition and raw catalog view before permitting this exception. Ambiguous names
-   and macros overriding the views' functions keep the conservative path. Query-text additions,
-   replacements and removals invalidate bounded entries regardless of timestamp. This is
-   conservative even for evaluator queries that do not read text. Other mixed table queries,
+   and macros overriding the views' functions keep the conservative path. Each bounded entry
+   records which texts it reads (`ReadRange.texts`, child key `rt`; absent = all): none, only
+   `query_text_names` (verified like `query_texts`; the newest text per statement by first
+   appearance), or `query_texts`. An added text file invalidates the last kind always, the second
+   unless the file only refreshes `last_seen` (`texts_refresh_only`, set at flush), never the first;
+   a removed text file invalidates every text reader; a macro whose body reads a text view counts
+   as reading `query_texts`. Other mixed table queries,
    custom views and unproven macros keep generation-only validity. Macro bodies and every
    overload must pass the dependency check. Errors and volatile queries are not stored.
    Identical requests in flight share one execution. `/health` exposes cumulative entry counts
@@ -373,9 +383,12 @@ there is no retry polling. Outage recovery still uses the separate `lost` state.
 ## Known limits
 
 - Result-cache reuse across flushes needs identical expanded SQL and proven evaluator dependencies.
-  Moving Grafana bounds share entries only when all used window parameters stay equal. Changes to rollups or the registry, and removal
-  of any evaluator file, invalidate conservatively even when an individual query could be
-  unaffected. Mixed raw-table SQL outside the verified query-text join and unproven macros remain generation-bound.
+  Moving Grafana bounds share entries only when all used window parameters stay equal. Changes to rollups or the registry (each day close), and removal
+  of any evaluator file other than by a content-preserving merge (retention), invalidate
+  conservatively even when an individual query could be unaffected. A window ending now changes its
+  key every step, so "Last N hours" reloaded a step later is computed again. A query still
+  running when the cache moves to a newer catalog is not stored. On an S3 store the merge before an upload
+  follows its flush within milliseconds, so it usually invalidates like any removal. Mixed raw-table SQL outside the verified query-text join and unproven macros remain generation-bound.
 - A job that runs every 60 s or more often is not retried after a lock timeout
   (`collector.lock_timeout_ms`, 100 ms by default, as in pgwatch): its chart misses that run's
   point. The 30-second jobs that read relation sizes (`pg_class`, `pg_total_relation_size`,

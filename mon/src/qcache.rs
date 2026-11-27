@@ -18,7 +18,7 @@
 //!   `ENTRY_OVERHEAD`; least-recently-used out above `cap_bytes` (an ordered tick index, O(log n));
 //!   an entry over `max_entry_bytes` (compressed) is not stored.
 use crate::query::{QueryError, Reply};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -118,6 +118,46 @@ fn reads(f: &crate::catalog::FileEntry, r: &crate::readset::ReadRange) -> bool {
     }
 }
 
+/// Files a delta adds and removes without changing any answer: a merge output (FileEntry::replaces)
+/// whose every input was in the old snapshot and is removed in this delta, with the same kind;
+/// then those inputs too. Returns (added paths, removed paths) to skip. Anything else (an input
+/// that arrived after the old snapshot, a chain of merges inside one delta, a rollup rebuild)
+/// keeps the conservative rules.
+fn replacements<'a>(
+    added: &'a [crate::catalog::FileEntry],
+    removed: &'a [crate::catalog::FileEntry],
+) -> (HashSet<&'a str>, HashSet<&'a str>) {
+    let gone: HashMap<u64, &crate::catalog::FileEntry> = removed
+        .iter()
+        .filter(|f| !added.iter().any(|a| a.path == f.path))
+        .filter_map(|f| f.file_id().map(|id| (id, f)))
+        .collect();
+    let (mut a, mut r) = (HashSet::new(), HashSet::new());
+    for f in added.iter().filter(|f| !f.replaces.is_empty()) {
+        let inputs: Option<Vec<&crate::catalog::FileEntry>> = f
+            .replaces
+            .iter()
+            .map(|id| gone.get(id).copied().filter(|g| g.kind == f.kind && g.day == f.day))
+            .collect();
+        if let Some(inputs) = inputs {
+            a.insert(f.path.as_str());
+            r.extend(inputs.into_iter().map(|g| g.path.as_str()));
+        }
+    }
+    (a, r)
+}
+
+/// Whether an added query-text file can change an answer reading texts this way (ReadRange::texts):
+/// never one that reads none, one through `query_text_names` unless the file only refreshes
+/// last_seen, and always one through `query_texts`.
+fn texts_change(f: &crate::catalog::FileEntry, r: &crate::readset::ReadRange) -> bool {
+    match r.texts {
+        crate::readset::TEXTS_NONE => false,
+        crate::readset::TEXTS_NAMES => !f.texts_refresh_only,
+        _ => true,
+    }
+}
+
 /// Prefix collisions invalidate conservatively; unknown file or query coverage does too.
 fn unrelated(f: &crate::catalog::FileEntry, r: &crate::readset::ReadRange) -> bool {
     if !matches!(f.kind.as_str(), "samples" | "series") {
@@ -178,6 +218,9 @@ pub struct L1Stats {
     pub stores: AtomicU64,
     pub evictions: AtomicU64,
     pub follower_retries: AtomicU64,
+    /// Entries kept at a catalog change only because its removed files were merged into a file
+    /// that holds them exactly (FileEntry::replaces).
+    pub kept_replaced: AtomicU64,
     pub not_stored_gen: AtomicU64,
     pub not_stored_size: AtomicU64,
     pub not_stored_volatile: AtomicU64,
@@ -324,6 +367,7 @@ impl QueryCache {
             "stores": l(&s.stores),
             "evictions": l(&s.evictions),
             "follower_retries": l(&s.follower_retries),
+            "kept_replaced": l(&s.kept_replaced),
             "not_stored_generation": l(&s.not_stored_gen),
             "not_stored_size": l(&s.not_stored_size),
             "not_stored_volatile": l(&s.not_stored_volatile),
@@ -341,6 +385,139 @@ impl QueryCache {
                 "removed_files": l(&s.invalidations.removed_files),
             },
         })
+    }
+
+    /// Move the cache to the catalog `snapshot` (newer than the cache's): keep the entries the
+    /// change cannot affect, drop the rest. Called by requests and by the server's catalog
+    /// follower (`observe`, the latest generation every 500 ms), so a merge is usually judged
+    /// against the snapshot just before it (FileEntry::replaces); a merge in the same poll as its
+    /// inputs' flush stays conservative.
+    fn advance(&self, st: &mut L1State, snapshot: &Snapshot) {
+        let gen_now = snapshot.gen;
+        let changes = st.snapshot.as_ref().and_then(|old| snapshot.changes(old));
+        if let Some((added, removed)) = changes {
+            let old = st.snapshot.as_ref().unwrap();
+            let old_epoch = old.data_epoch;
+            // Adding samples can only disable a rollup that was usable before.
+            // Retained rollup files on an already raw day do not make it eligible.
+            let rollup_days = crate::eval::rollup::valid_days(old.files.as_ref().unwrap(), 0);
+            let changed_rollup_days: Vec<_> = added
+                .iter()
+                .filter(|f| f.kind == "samples" && rollup_days.contains_key(&f.day))
+                .map(|f| f.day)
+                .collect();
+            // An unexplained data epoch change cannot be proved harmless.
+            let known = old_epoch == snapshot.data_epoch || !added.is_empty() || !removed.is_empty();
+            let (excused_added, excused_removed) = replacements(&added, &removed);
+            let keep: Vec<_> = st
+                .map
+                .iter()
+                .filter_map(|(k, slot)| {
+                    let Slot::Ready(e, _) = slot else { return None };
+                    let reasons = &self.stats.invalidations;
+                    let reason = if let Some(r) = &e.range {
+                        if !known {
+                            Some(&reasons.data_epoch)
+                        } else if k.dict != snapshot.dict_version {
+                            Some(&reasons.dictionary)
+                        } else if changed_rollup_days
+                            .iter()
+                            .any(|day| *day >= crate::model::day_of(r.start) && *day <= crate::model::day_of(r.end))
+                        {
+                            Some(&reasons.rollup_eligibility)
+                        } else if let Some(f) = added.iter().find(|f| {
+                            if excused_added.contains(f.path.as_str()) {
+                                return false;
+                            }
+                            if f.kind == "query_texts" {
+                                return texts_change(f, r);
+                            }
+                            !(unrelated(f, r)
+                                || (!matches!(
+                                    f.kind.as_str(),
+                                    crate::eval::rollup::KIND
+                                        | crate::eval::rollup::KIND_1D
+                                        | crate::eval::rollup::KIND_1HM
+                                ) && f.min_ts > r.end
+                                    && (!matches!(
+                                        f.kind.as_str(),
+                                        "series" | crate::store::SERIES_MONTH | crate::registry::KIND
+                                    ) || !reads(f, r))))
+                        }) {
+                            Some(match f.kind.as_str() {
+                                "samples" => &reasons.added_samples,
+                                "query_texts" => &reasons.added_query_texts,
+                                "series" | crate::store::SERIES_MONTH | crate::registry::KIND => &reasons.added_series,
+                                _ => &reasons.added_other,
+                            })
+                        } else if removed.iter().any(|f| {
+                            !excused_removed.contains(f.path.as_str())
+                                && match f.kind.as_str() {
+                                    // a text file that went away (texts retention)
+                                    "query_texts" => r.texts > crate::readset::TEXTS_NONE,
+                                    "samples"
+                                    | "series"
+                                    | crate::store::SERIES_MONTH
+                                    | crate::registry::KIND
+                                    | crate::eval::rollup::KIND
+                                    | crate::eval::rollup::KIND_1D
+                                    | crate::eval::rollup::KIND_1HM => true,
+                                    _ => false,
+                                }
+                        }) {
+                            Some(&reasons.removed_files)
+                        } else {
+                            None
+                        }
+                    } else {
+                        Some(&reasons.unbounded)
+                    };
+                    if let Some(reason) = reason {
+                        reason.fetch_add(1, Ordering::Relaxed);
+                        None
+                    } else {
+                        Some(*k)
+                    }
+                })
+                .collect();
+            if !excused_removed.is_empty() {
+                // entries the old rule (any removed file) would have dropped
+                self.stats.kept_replaced.fetch_add(keep.len() as u64, Ordering::Relaxed);
+            }
+            let mut kept = HashMap::new();
+            for k in keep {
+                kept.insert(k, st.map.remove(&k).unwrap());
+            }
+            st.clear();
+            for (k, slot) in kept {
+                if let Slot::Ready(e, t) = &slot {
+                    st.bytes += e.charge();
+                    st.lru.insert(*t, k);
+                }
+                st.map.insert(k, slot);
+            }
+        } else {
+            self.stats
+                .invalidations
+                .snapshot
+                .fetch_add(st.lru.len() as u64, Ordering::Relaxed);
+            st.clear();
+        }
+        st.gen = gen_now;
+        st.snapshot = Some(snapshot.clone());
+    }
+
+    /// Follow the catalog without a request (see `advance`). No-op when the cache is off or the
+    /// snapshot is not newer.
+    pub fn observe(&self, snapshot: impl Into<Snapshot>) {
+        if !self.enabled() {
+            return;
+        }
+        let snapshot = snapshot.into();
+        let mut st = self.st.lock().unwrap();
+        if snapshot.gen > st.gen {
+            self.advance(&mut st, &snapshot);
+        }
     }
 
     /// Serve `sql` from the cache, from a flight already running, or by starting one that runs
@@ -374,106 +551,7 @@ impl QueryCache {
             let next = {
                 let mut st = self.st.lock().unwrap();
                 if gen_now > st.gen {
-                    let changes = st.snapshot.as_ref().and_then(|old| snapshot.changes(old));
-                    if let Some((added, removed)) = changes {
-                        let old = st.snapshot.as_ref().unwrap();
-                        let old_epoch = old.data_epoch;
-                        // Adding samples can only disable a rollup that was usable before.
-                        // Retained rollup files on an already raw day do not make it eligible.
-                        let rollup_days = crate::eval::rollup::valid_days(old.files.as_ref().unwrap(), 0);
-                        let changed_rollup_days: Vec<_> = added
-                            .iter()
-                            .filter(|f| f.kind == "samples" && rollup_days.contains_key(&f.day))
-                            .map(|f| f.day)
-                            .collect();
-                        // An unexplained data epoch change cannot be proved harmless.
-                        let known = old_epoch == snapshot.data_epoch || !added.is_empty() || !removed.is_empty();
-                        let keep: Vec<_> = st
-                            .map
-                            .iter()
-                            .filter_map(|(k, slot)| {
-                                let Slot::Ready(e, _) = slot else { return None };
-                                let reasons = &self.stats.invalidations;
-                                let reason = if let Some(r) = &e.range {
-                                    if !known {
-                                        Some(&reasons.data_epoch)
-                                    } else if k.dict != snapshot.dict_version {
-                                        Some(&reasons.dictionary)
-                                    } else if changed_rollup_days.iter().any(|day| {
-                                        *day >= crate::model::day_of(r.start) && *day <= crate::model::day_of(r.end)
-                                    }) {
-                                        Some(&reasons.rollup_eligibility)
-                                    } else if let Some(f) = added.iter().find(|f| {
-                                        !(unrelated(f, r)
-                                            || (!matches!(
-                                                f.kind.as_str(),
-                                                "query_texts"
-                                                    | crate::eval::rollup::KIND
-                                                    | crate::eval::rollup::KIND_1D
-                                                    | crate::eval::rollup::KIND_1HM
-                                            ) && f.min_ts > r.end
-                                                && (!matches!(
-                                                    f.kind.as_str(),
-                                                    "series" | crate::store::SERIES_MONTH | crate::registry::KIND
-                                                ) || !reads(f, r))))
-                                    }) {
-                                        Some(match f.kind.as_str() {
-                                            "samples" => &reasons.added_samples,
-                                            "query_texts" => &reasons.added_query_texts,
-                                            "series" | crate::store::SERIES_MONTH | crate::registry::KIND => {
-                                                &reasons.added_series
-                                            }
-                                            _ => &reasons.added_other,
-                                        })
-                                    } else if removed.iter().any(|f| {
-                                        matches!(
-                                            f.kind.as_str(),
-                                            "samples"
-                                                | "query_texts"
-                                                | "series"
-                                                | crate::store::SERIES_MONTH
-                                                | crate::registry::KIND
-                                                | crate::eval::rollup::KIND
-                                                | crate::eval::rollup::KIND_1D
-                                                | crate::eval::rollup::KIND_1HM
-                                        )
-                                    }) {
-                                        Some(&reasons.removed_files)
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    Some(&reasons.unbounded)
-                                };
-                                if let Some(reason) = reason {
-                                    reason.fetch_add(1, Ordering::Relaxed);
-                                    None
-                                } else {
-                                    Some(*k)
-                                }
-                            })
-                            .collect();
-                        let mut kept = HashMap::new();
-                        for k in keep {
-                            kept.insert(k, st.map.remove(&k).unwrap());
-                        }
-                        st.clear();
-                        for (k, slot) in kept {
-                            if let Slot::Ready(e, t) = &slot {
-                                st.bytes += e.charge();
-                                st.lru.insert(*t, k);
-                            }
-                            st.map.insert(k, slot);
-                        }
-                    } else {
-                        self.stats
-                            .invalidations
-                            .snapshot
-                            .fetch_add(st.lru.len() as u64, Ordering::Relaxed);
-                        st.clear();
-                    }
-                    st.gen = gen_now;
-                    st.snapshot = Some(snapshot.clone());
+                    self.advance(&mut st, &snapshot);
                 }
                 if st.snapshot.is_none() && gen_now == st.gen {
                     st.snapshot = Some(snapshot.clone());
@@ -678,6 +756,57 @@ pub fn normalize(sql: &str) -> String {
 mod tests {
     use super::*;
 
+    fn f(kind: &str, day: i64, id: u64, replaces: &[u64]) -> crate::catalog::FileEntry {
+        crate::catalog::FileEntry {
+            kind: kind.into(),
+            path: format!("{kind}/date=x/L1-{id:08}.parquet"),
+            day,
+            level: 1,
+            rows: 1,
+            bytes: 1,
+            min_ts: 0,
+            max_ts: 0,
+            created_ms: 0,
+            registered: false,
+            ver: 0,
+            series_prefixes: None,
+            replaces: replaces.to_vec(),
+            texts_refresh_only: false,
+        }
+    }
+
+    #[test]
+    fn only_a_merge_of_inputs_this_delta_removes_is_excused() {
+        let paths = |s: &HashSet<&str>| {
+            let mut v: Vec<String> = s.iter().map(|x| x.to_string()).collect();
+            v.sort();
+            v
+        };
+        let (a, b) = (f("samples", 1, 1, &[]), f("samples", 1, 2, &[]));
+        let merged = [f("samples", 1, 3, &[1, 2])];
+        // the whole merge in one delta
+        let both = [a.clone(), b.clone()];
+        let (x, r) = replacements(&merged, &both);
+        assert_eq!(
+            (paths(&x), paths(&r)),
+            (vec![merged[0].path.clone()], vec![a.path.clone(), b.path.clone()])
+        );
+        // an input the old snapshot did not have (or a chain L0 -> L1 -> L2 inside one delta)
+        let only_a = [a.clone()];
+        let (x, r) = replacements(&merged, &only_a);
+        assert!(x.is_empty() && r.is_empty());
+        // another kind or day with the same id
+        for other in [f("series", 1, 2, &[]), f("samples", 2, 2, &[])] {
+            let removed = [a.clone(), other];
+            let (x, _) = replacements(&merged, &removed);
+            assert!(x.is_empty());
+        }
+        // an input still in the catalog (modified in place, e.g. registered) is not gone
+        let added = [merged[0].clone(), b.clone()];
+        let (x, _) = replacements(&added, &both);
+        assert!(x.is_empty());
+    }
+
     #[tokio::test]
     async fn prefix_overlap_and_unknown_metadata_invalidate() {
         for (file_prefixes, query_prefixes, want) in [
@@ -696,6 +825,7 @@ mod tests {
                 start: 0,
                 end: 100,
                 prefixes: query_prefixes,
+                texts: crate::readset::TEXTS_ALL,
             };
             let r = Reply {
                 body: "original".into(),
