@@ -930,8 +930,8 @@ PGPASSWORD=... postgresai checkup \
 
   ```json
   {
-    "H002": { "contract_version": "1.3.0", "checkId": "H002", "...": "..." },
-    "F003": { "contract_version": "1.3.0", "checkId": "F003", "...": "..." }
+    "H002": { "contract_version": "1.4.0", "checkId": "H002", "...": "..." },
+    "F003": { "contract_version": "1.4.0", "checkId": "F003", "...": "..." }
   }
   ```
 
@@ -1056,7 +1056,7 @@ A consumer should accept any report whose `contract_version` shares its **major*
 and has a **minor ≥** the minimum it was built against. Pin the major, tolerate
 additive minors, and treat a major bump as a required review.
 
-The current contract version is **`1.3.0`** (1.1.0: A014 `observed_size`; 1.2.0: A005 and K006–K008 facts and chart data, box only; 1.3.0: in full mode, a node result without data carries `available` and `reason`).
+The current contract version is **`1.4.0`** (1.1.0: A014 `observed_size`; 1.2.0: A005 and K006–K008 facts and chart data, box only; 1.3.0: in full mode, a node result without data carries `available` and `reason`; 1.4.0: F004 `bloat_size_at_window_start_bytes` / `_at` per table, box only).
 
 ### Envelope fields
 
