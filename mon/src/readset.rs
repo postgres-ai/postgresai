@@ -9,6 +9,49 @@ pub struct ReadRange {
     /// High 16 bits of the metric's series IDs. None means unknown dependencies.
     #[serde(default)]
     pub prefixes: Option<Vec<u16>>,
+    /// Which statement texts the query reads (TEXTS_*): an added query-text file can change
+    /// only answers that read texts. Absent = TEXTS_ALL (conservative).
+    #[serde(default = "texts_all")]
+    pub texts: u8,
+}
+
+/// The query reads no statement texts.
+pub const TEXTS_NONE: u8 = 0;
+/// Only through `query_text_names` (newest text by first appearance): a refresh-only text file
+/// (FileEntry::texts_refresh_only) cannot change it.
+pub const TEXTS_NAMES: u8 = 1;
+/// Through `query_texts` (first_seen, last_seen, every stored text) or a macro over it.
+pub const TEXTS_ALL: u8 = 2;
+
+fn texts_all() -> u8 {
+    TEXTS_ALL
+}
+
+/// The statement-text dependency of a serialized statement (TEXTS_*): the verified text views it
+/// names, and `text_macros` (safe macros whose bodies read texts) count as TEXTS_ALL. Names are
+/// matched whatever their scope, so a CTE that shadows a view only makes it more conservative.
+pub fn text_deps(v: &serde_json::Value, text_macros: &std::collections::HashSet<String>) -> u8 {
+    use serde_json::Value;
+    match v {
+        Value::Object(m) => {
+            let mut d = TEXTS_NONE;
+            if m.get("type").and_then(Value::as_str) == Some("BASE_TABLE") {
+                match m["table_name"].as_str().unwrap_or("").to_ascii_lowercase().as_str() {
+                    "query_texts" => d = TEXTS_ALL,
+                    "query_text_names" => d = TEXTS_NAMES,
+                    _ => {}
+                }
+            }
+            if let Some(name) = m.get("function_name").and_then(Value::as_str) {
+                if text_macros.contains(&name.to_ascii_lowercase()) {
+                    d = TEXTS_ALL;
+                }
+            }
+            m.values().fold(d, |acc, v| acc.max(text_deps(v, text_macros)))
+        }
+        Value::Array(a) => a.iter().fold(TEXTS_NONE, |acc, v| acc.max(text_deps(v, text_macros))),
+        _ => TEXTS_NONE,
+    }
 }
 
 thread_local! {
@@ -26,6 +69,7 @@ pub fn record(metrics: &[&str], start: i64, end: i64) {
             start,
             end,
             prefixes: Some(Vec::new()),
+            texts: TEXTS_ALL,
         });
         r.start = r.start.min(start);
         r.end = r.end.max(end);

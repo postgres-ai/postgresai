@@ -38,6 +38,14 @@ SELECT queryid, dbname, max(query) AS query, min(first_seen) AS first_seen, max(
 FROM _raw_query_texts
 GROUP BY queryid, dbname, query_hash, source, cluster, node_name;
 
+-- One text per (queryid, dbname): the newest by first appearance (over every node's texts).
+-- A last_seen refresh cannot change it (a text's first_seen is its earliest row), so the result
+-- cache keeps the answers that read only this view across refresh-only text snapshots.
+CREATE OR REPLACE VIEW query_text_names AS
+SELECT queryid, dbname, arg_max(query, first_seen) AS query
+FROM query_texts
+GROUP BY queryid, dbname;
+
 -- Postgres jsonlog lines; parameter values dropped; auto_explain lines carry plan_hash.
 -- queryid (extra column) = auto_explain "Query Identifier" or jsonlog query_id.
 CREATE OR REPLACE VIEW logs AS

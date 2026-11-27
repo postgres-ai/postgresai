@@ -703,6 +703,8 @@ impl StoreCore {
                 registered: false,
                 ver: 0,
                 series_prefixes: Some(prefixes.into_iter().collect()),
+                replaces: vec![],
+                texts_refresh_only: false,
             });
         }
         self.db.execute_batch("DROP TABLE buf_samples")?;
@@ -757,21 +759,22 @@ impl StoreCore {
             }
             app.flush()?;
         }
-        let mut days: BTreeMap<i64, (u64, i64, i64, BTreeSet<u16>)> = BTreeMap::new();
+        let mut days: BTreeMap<i64, (u64, i64, i64, BTreeSet<u16>, bool)> = BTreeMap::new();
         for r in rows {
             let ts = r.ts();
             let e = days
                 .entry(day_of(ts))
-                .or_insert_with(|| (0, i64::MAX, i64::MIN, BTreeSet::new()));
+                .or_insert_with(|| (0, i64::MAX, i64::MIN, BTreeSet::new(), true));
             e.0 += 1;
             e.1 = e.1.min(ts);
             e.2 = e.2.max(ts);
             if let Some(prefix) = r.series_prefix() {
                 e.3.insert(prefix);
             }
+            e.4 &= r.text_refresh();
         }
         let mut out = Vec::new();
-        for (day, (n, mn, mx, prefixes)) in days {
+        for (day, (n, mn, mx, prefixes, refresh_only)) in days {
             let id = alloc();
             let (rel, abs) = self.out_path(kind, day, 0, id);
             let sel = format!(
@@ -797,6 +800,8 @@ impl StoreCore {
                 registered: false,
                 ver: 0,
                 series_prefixes: (kind == "series").then(|| prefixes.into_iter().collect()),
+                replaces: vec![],
+                texts_refresh_only: kind == "query_texts" && refresh_only,
             });
         }
         self.db.execute_batch(&format!("DROP TABLE {tbl}"))?;
@@ -916,6 +921,10 @@ fn remove_orphans(root: &Path, cat: &Catalog) -> anyhow::Result<()> {
 pub trait Appendable {
     fn series_prefix(&self) -> Option<u16> {
         None
+    }
+    /// A query-text row that only refreshes `last_seen` (no text): FileEntry::texts_refresh_only.
+    fn text_refresh(&self) -> bool {
+        false
     }
     fn buf_ddl() -> &'static str;
     /// SELECT list from the buffer table to the physical file.
@@ -1061,6 +1070,9 @@ impl Appendable for PlanDef {
 }
 
 impl Appendable for QueryText {
+    fn text_refresh(&self) -> bool {
+        self.query.is_none()
+    }
     fn approx_bytes(&self) -> usize {
         64 + self.query.as_ref().map_or(0, |q| q.len())
     }
@@ -1139,11 +1151,30 @@ pub struct Compactor {
     db: Connection,
 }
 
+/// Minimum age of a flush file before the open-hour merge takes it (see Compactor::plan).
+const OPEN_MERGE_MIN_AGE_MS: i64 = 5_000;
+
 struct Job {
     kind: String,
     day: i64,
     level: u8,
     inputs: Vec<FileEntry>,
+}
+
+/// The input file ids a merge output may claim to hold exactly (FileEntry::replaces): the
+/// k-way merges of samples (every row, checked by count and checksum) and series (deduplicated
+/// by id; a series' labels are the same in every row), and the query-text merge (grouped by
+/// the `query_texts` view's own key, so the view's rows are unchanged). Other kinds, and inputs
+/// without an id in their name, claim nothing.
+fn content_preserving_inputs(job: &Job) -> Vec<u64> {
+    if !matches!(job.kind.as_str(), "samples" | "series" | "query_texts") {
+        return vec![];
+    }
+    job.inputs
+        .iter()
+        .map(FileEntry::file_id)
+        .collect::<Option<Vec<u64>>>()
+        .unwrap_or_default()
 }
 
 impl Compactor {
@@ -1198,6 +1229,33 @@ impl Compactor {
                         level: 1,
                         inputs: l0,
                     });
+                } else if kind == "samples" && in_bucket.is_none() && self.cfg.open_merge_files > 1 {
+                    // the current hour's flush files, merged into one level-0 file once there
+                    // are enough (the S3 upload round does the same with merge_unuploaded). Files
+                    // younger than OPEN_MERGE_MIN_AGE_MS wait for the next pass: the result cache
+                    // polls the catalog every 500 ms and keeps its entries across a merge only
+                    // when it saw every input before the merge (qcache.rs, `replacements`); the
+                    // flush and compaction ticks are both 60 s and often land together.
+                    let cur: Vec<FileEntry> = cat
+                        .files
+                        .iter()
+                        .filter(|f| {
+                            f.kind == kind
+                                && f.day == day
+                                && f.level == 0
+                                && f.created_ms >= hour_start
+                                && f.created_ms <= now - OPEN_MERGE_MIN_AGE_MS
+                        })
+                        .cloned()
+                        .collect();
+                    if cur.len() >= self.cfg.open_merge_files {
+                        jobs.push(Job {
+                            kind,
+                            day,
+                            level: 0,
+                            inputs: cur,
+                        });
+                    }
                 }
             }
         }
@@ -1422,6 +1480,8 @@ impl Compactor {
                     registered: job.kind == "series" && job.inputs.iter().all(|f| f.registered),
                     ver: 0,
                     series_prefixes: None,
+                    replaces: content_preserving_inputs(&job),
+                    texts_refresh_only: false,
                 },
             ));
         }
@@ -1455,6 +1515,8 @@ impl Compactor {
                 registered: false,
                 ver: crate::eval::rollup::VER,
                 series_prefixes: None,
+                replaces: vec![],
+                texts_refresh_only: false,
             })
         } else {
             None
@@ -1512,7 +1574,17 @@ impl Compactor {
                 day_str(job.day)
             );
         }
+        // The output takes the place of its first input: the evaluator's scan visits files in
+        // catalog order, so samples outside the merge keep their order relative to it.
+        let at = cat
+            .files
+            .iter()
+            .position(|f| input_paths.contains(f.path.as_str()))
+            .unwrap_or(cat.files.len());
         cat.files.retain(|f| !input_paths.contains(f.path.as_str()));
+        let at = at.min(cat.files.len());
+        let outs: Vec<FileEntry> = outs.into_iter().map(|(_, e)| e).collect();
+        cat.files.splice(at..at, outs);
         if let Some(r) = rollup_entry {
             // a day's rollup is rebuilt with its samples: retire the old one
             let old: Vec<String> = cat
@@ -1529,7 +1601,6 @@ impl Compactor {
             }
             cat.files.push(r);
         }
-        cat.files.extend(outs.into_iter().map(|(_, e)| e));
         let after = now_ms() + self.cfg.delete_grace_s as i64 * 1000;
         for p in input_paths {
             cat.pending_delete.push((p.to_string(), after));
@@ -1608,6 +1679,8 @@ impl Compactor {
                     registered: false,
                     ver: 0,
                     series_prefixes: None,
+                    replaces: vec![],
+                    texts_refresh_only: false,
                 })
             };
             let mut cat = self.shared.catalog.lock().unwrap();
@@ -1705,6 +1778,8 @@ impl Compactor {
                 registered: false,
                 ver: 0,
                 series_prefixes: None,
+                replaces: vec![],
+                texts_refresh_only: false,
             });
             cat.save(&self.shared.root)?;
             self.shared.generation.store(cat.generation, Ordering::Release);

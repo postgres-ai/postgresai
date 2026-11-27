@@ -788,6 +788,29 @@ fn serve_loop(
         }
         let rules_backend = backend.clone();
         let state = query::AppState::new(backend, cfg.http.clone(), shared.clone()).with_cache(&views_text);
+        // The result cache polls the catalog every 500 ms, not only when a request arrives, so a
+        // merge is judged against the snapshot just before it (qcache.rs, `advance`; #516); a
+        // merge in the same poll as its inputs' flush stays conservative.
+        if state.cache.enabled() {
+            let st = state.clone();
+            tokio::spawn(async move {
+                let mut seen = 0u64;
+                let mut tick = tokio::time::interval(std::time::Duration::from_millis(500));
+                loop {
+                    tick.tick().await;
+                    let gen = st.shared.generation.load(std::sync::atomic::Ordering::Acquire);
+                    if gen == seen {
+                        continue;
+                    }
+                    let Ok(dv) = st.backend.dictionary_version() else {
+                        continue;
+                    };
+                    let snap = st.cache.snapshot(&st.shared.catalog.lock().unwrap(), dv);
+                    seen = snap.gen;
+                    st.cache.observe(snap);
+                }
+            });
+        }
         // Ingest writes into the store: only with a store thread (not read-only).
         let mut extra = axum::Router::new();
         if writable {

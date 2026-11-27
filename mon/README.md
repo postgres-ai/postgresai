@@ -281,6 +281,7 @@ Top level:
 | `compact_events_memory_limit` | `96MB` | The same for logs, plans and other non-sample kinds. |
 | `compact_grace_s` | 300 | Seconds after a day ends before it is compacted as closed. |
 | `delete_grace_s` | 300 | Seconds a replaced or expired file stays on disk. |
+| `open_merge_files` | 8 | Local store: merge the current hour's sample flush files into one once there are this many (0 or 1: only when the hour ends). Merged files are filtered by series and time when read; flush files are decoded whole. |
 | `closed_lag_ms` | 5000 | A sample older than the newest sample minus this counts as late. |
 | `zstd_level` | 9 | Compression level of compacted files. |
 | `row_group_size` | 122,880 | Rows per Parquet row group. |
@@ -428,10 +429,19 @@ Sample additions invalidate when they can disable a rollup on a day intersecting
 even for unrelated or newer samples. A retained rollup on a day already using raw files does not
 cause this invalidation. Same-day series additions remain conservative because label-only queries
 can expose the new series without samples in the window.
-Related overlapping data, compaction, retention, and changes to the query dictionary invalidate
-affected entries. Registry and rollup changes are handled conservatively. Evaluator queries may
-join the verified built-in `query_texts` view; query-text file changes invalidate bounded entries
-regardless of timestamp. Other mixed raw-table queries and queries with unproven dependencies
+Related overlapping data, retention, and changes to the query dictionary invalidate affected
+entries. A merge keeps them: compaction writes the ids of the files a merged file holds exactly
+(`replaces` in the catalog), and an entry survives when every one of them was in the catalog
+just before the merge (the server polls the catalog every 500 ms; a merge that lands in the same
+poll as the flush of one of its inputs still invalidates; `cache.l1.kept_replaced` counts the kept
+entries). On an S3 store the merge before each upload runs right after a flush, so it
+usually still invalidates. Registry and rollup changes (the day close)
+are handled conservatively. Evaluator queries may join the verified built-in `query_texts` and
+`query_text_names` views. A query-text file changes only entries that read texts: one through
+`query_text_names` (the newest text of each statement by first appearance) survives a snapshot
+that only refreshes `last_seen`; one through `query_texts` does not; a removed text file
+invalidates every text reader. Dashboard 02 names a statement by `query_text_names`: when a
+statement has had several texts, its legend shows the one that appeared most recently. Other mixed raw-table queries and queries with unproven dependencies
 remain valid for one catalog generation. `/health` reports entry invalidations by reason under
 `cache.l1.invalidations`. Compiled Grafana targets send raw times in a leading `pgai-window-v1`
 header. The parent expands their numeric window parameters before keying and running the SQL.

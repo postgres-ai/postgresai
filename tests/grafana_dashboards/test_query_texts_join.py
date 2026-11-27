@@ -6,7 +6,9 @@ dashboards read ``query_texts`` instead. That view keeps one row per stored text
 (queryid, dbname), so a queryid whose text changed has two rows: a plain join would split its
 series in two. Every read of ``query_texts`` must therefore reduce to one row per queryid and
 database (an aggregate, or a LIMIT 1 lookup), and every series still has a name when no text
-was collected (it falls back to the queryid).
+was collected (it falls back to the queryid). The view ``query_text_names`` is that reduction
+already (one row per queryid and database, the newest text by first appearance; #516), so it may
+be joined directly.
 """
 from __future__ import annotations
 
@@ -71,8 +73,8 @@ def test_query_texts_reads_are_actually_present() -> None:
     reads = 0
     for number in (2, 3):
         dashboard = json.loads(dashboard_file(number).read_text(encoding="utf-8"))
-        reads += sum(len(re.findall(r"\bquery_texts\b", sql)) for _, _, _, sql in _queries(dashboard))
-    assert reads >= MIN_QUERY_TEXT_READS, f"only {reads} query_texts reads in Dashboards 2 and 3"
+        reads += sum(len(re.findall(r"\bquery_text(s|_names)\b", sql)) for _, _, _, sql in _queries(dashboard))
+    assert reads >= MIN_QUERY_TEXT_READS, f"only {reads} statement-text reads in Dashboards 2 and 3"
 
 
 def test_series_named_by_text_fall_back_to_the_queryid() -> None:
@@ -80,7 +82,7 @@ def test_series_named_by_text_fall_back_to_the_queryid() -> None:
     dashboard = json.loads(dashboard_file(2).read_text(encoding="utf-8"))
     named = 0
     for where, panel, target, sql in _queries(dashboard):
-        if panel is None or target.get("format") != "timeseries" or "query_texts" not in sql:
+        if panel is None or target.get("format") != "timeseries" or not re.search(r"\bquery_text(s|_names)\b", sql):
             continue
         m = re.search(r"AS __key, (.*?) AS __series,", sql)
         assert m, where

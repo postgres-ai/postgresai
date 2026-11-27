@@ -27,6 +27,25 @@ pub struct FileEntry {
     /// Sorted high 16 bits of series IDs in a flush file. Missing on older/merged files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub series_prefixes: Option<Vec<u16>>,
+    /// Merge output only: the file ids (`file_id`) of the inputs this file holds exactly, row for
+    /// row (samples, series by id, query texts by view group). The result cache keeps entries
+    /// across such a merge (qcache.rs). Never cleared; absent = not a content-preserving merge.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replaces: Vec<u64>,
+    /// query_texts flush files: every row is a `last_seen` refresh (no text), so the newest text
+    /// by first appearance (`query_text_names`) of every statement is unchanged by this file.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub texts_refresh_only: bool,
+}
+
+impl FileEntry {
+    /// The id in the file name (`L<level>-<id>.parquet`, `R-<id>`, ...): unique per path, never
+    /// reused (`next_file_id`).
+    pub fn file_id(&self) -> Option<u64> {
+        let name = self.path.rsplit('/').next()?;
+        let stem = name.strip_suffix(".parquet")?;
+        stem.rsplit('-').next()?.parse().ok()
+    }
 }
 
 fn is_zero(x: &u8) -> bool {

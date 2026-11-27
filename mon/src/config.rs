@@ -289,6 +289,11 @@ pub struct StoreCfg {
     pub compact_grace_s: u64,
     /// Seconds a replaced file stays on disk so in-flight readers can finish.
     pub delete_grace_s: u64,
+    /// Local stores: once the current hour has this many sample flush files, merge them into
+    /// one (Rust-written, so scans filter it by series and time; flush files are decoded whole),
+    /// instead of waiting for the hour to end. 0 or 1 = only at the hour's end. #516: 87 flush files
+    /// at minute 42 doubled a cold 24 h dashboard load.
+    pub open_merge_files: usize,
     pub zstd_level: i32,
     pub row_group_size: u64,
     /// Flush as soon as this many WAL bytes are buffered (bursts, catch-up, WAL replay).
@@ -314,6 +319,7 @@ impl Default for StoreCfg {
             writer_threads: 1,
             compact_grace_s: 300,
             delete_grace_s: 300,
+            open_merge_files: 8,
             zstd_level: 9,
             row_group_size: 122_880,
             max_buffer_bytes: 32 << 20,

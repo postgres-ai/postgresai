@@ -406,10 +406,18 @@ impl Scan {
                 }
             }
         }
-        // several files may hold the same series (days, flush files): restore time order
-        if !out.ts.windows(2).all(|w| w[0] <= w[1]) {
+        // several files may hold the same series (days, flush files): restore time order. Samples
+        // with one timestamp (a scrape target repeating a stale exposition timestamp, a late
+        // duplicate) go in a canonical order, real values before markers, then by value (total
+        // order), so the answer does not depend on how the files are cut (#516: a merge keeps
+        // cached results). Rollups keep the merged file's order for such ties.
+        if !out.ts.windows(2).all(|w| w[0] < w[1]) {
             let mut idx: Vec<usize> = (0..out.ts.len()).collect();
-            idx.sort_by_key(|&k| out.ts[k]);
+            idx.sort_by(|&a, &b| {
+                (out.ts[a], out.stale[a])
+                    .cmp(&(out.ts[b], out.stale[b]))
+                    .then(out.v[a].total_cmp(&out.v[b]))
+            });
             out.ts = idx.iter().map(|&k| out.ts[k]).collect();
             out.v = idx.iter().map(|&k| out.v[k]).collect();
             out.stale = idx.iter().map(|&k| out.stale[k]).collect();
@@ -691,6 +699,8 @@ mod tests {
                         registered: false,
                         ver: 0,
                         series_prefixes: None,
+                        replaces: vec![],
+                        texts_refresh_only: false,
                     };
                     for ids in [vec![7, u64::MAX], vec![], vec![5]] {
                         for (t0, t1, skip) in [(0, 5000, Some((1000, 3000))), (-2000, 8000, None), (9000, 10000, None)]
@@ -764,6 +774,8 @@ mod tests {
             registered: false,
             ver: 0,
             series_prefixes: None,
+            replaces: vec![],
+            texts_refresh_only: false,
         };
         let mut scan = Scan::open_skip(dir.path(), &[file], vec![0], 1000, 5000, Some((2000, 4000))).unwrap();
         let mut rows = SeriesRows::default();
@@ -810,6 +822,8 @@ mod tests {
             registered: false,
             ver: 0,
             series_prefixes: None,
+            replaces: vec![],
+            texts_refresh_only: false,
         };
         let mut scan = Scan::open(Path::new(root), &[file], vec![2], 1000, 3000).unwrap();
         let mut rows = SeriesRows::default();

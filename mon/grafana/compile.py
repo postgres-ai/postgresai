@@ -419,11 +419,13 @@ def wrap(sql, cols, legend, extra, ash=False, legend_column="__series", series_i
         sel.append("'1' AS __sid")
     identity = [c for c in cols if c not in ("t", "value")]
     if ash or identity:
-        # ash_by.sql exposes r(k,t,value) and names(k,labels). Format names before the grid join.
+        # Keyed cases (ash_by.sql, keyed=True) expose r(k,t,value) and names(k,labels,...). Format
+        # names before the grid join, so labels and legends are built once per series (#516).
         if ash:
-            assert set(cols) == {"labels", "t", "value"}
-            tail = "SELECT labels, t, value FROM r JOIN names USING (k)"
-            assert sql.endswith(tail), "ash_by.sql output changed"
+            # keyed cases (ash_by.sql, cases with keyed=True) end with this select; `names` has
+            # every column but t and value
+            tail = f"SELECT {', '.join(cols)} FROM r JOIN names USING (k)"
+            assert {"labels", "t", "value"} <= set(cols) and sql.endswith(tail), "keyed case output changed"
             prefix = sql[:-len(tail)].rstrip()
             key, points, join = "q.k", "r", "r.k IS NOT DISTINCT FROM n.__key"
         else:
@@ -722,7 +724,7 @@ def compile_dashboard(spec, by_id, probe_url):
             keys = table_label_keys(p, probe_url, params.get("metric")) if table else None
             extra = spec["extra_labels"] if table else timeseries_labels(p, cols, params, spec["extra_labels"], probe_url)
             inner = inline(case_sql(case), params, gp, mvars)
-            ash = case["sql_file"] == "sql/reports/dash/ash_by.sql"
+            ash = case["sql_file"] == "sql/reports/dash/ash_by.sql" or case.get("keyed", False)
             legend = t.get("legendFormat")
             # Infinity sorts label keys first: the legend must precede link labels such as query_id.
             by = grouping(case)
