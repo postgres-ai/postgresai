@@ -6,6 +6,6 @@ coverage==7.10.6
 pytest-cov==7.0.0
 jsonschema==4.23.0
 PyYAML==6.0.3
-hypothesis==6.151.9
+hypothesis==6.151.10
 syrupy==5.1.0
 pytest-socket==0.7.0
