@@ -74,11 +74,15 @@ npx postgresai prepare-db -h host -p 5432 -U admin -d dbname
 Password input options (in priority order):
 - `--password <password>`
 - `PGAI_MON_PASSWORD` environment variable
-- if not provided: a strong password is generated automatically
+- if not provided: a new role gets a strong generated password; an existing role keeps its password (re-running `prepare-db` is safe). To set a new password on an existing role, pass `--reset-password` (with `--password`/`PGAI_MON_PASSWORD`, or without to generate one).
+
+`--json` output has `passwordChanged`: whether this run set the role's password.
+
+If `prepare-db` creates the role with a generated password and a later step fails, it drops the role again, so a re-run starts clean (if the drop fails, the `--json` error carries `generatedPassword`). If the role appears or disappears while `prepare-db` runs, the role step fails: re-run it.
 
 Monitoring passwords must use printable ASCII characters; non-ASCII passwords are rejected until SASLprep normalization is supported. Role creation and password resets send a SCRAM-SHA-256 verifier instead of the cleartext password, including when the server uses `password_encryption=md5`. Printed SQL redacts the verifier as well. Server statement logging can still record the verifier; treat it as sensitive.
 
-By default, the generated password is printed **only in interactive (TTY) mode**. In non-interactive mode, you must either provide the password explicitly, or opt-in to printing it:
+By default, the generated password is printed **only in interactive (TTY) mode**, with `--json` too (`generatedPassword`). In non-interactive mode, you must either provide the password explicitly, or opt-in to printing it:
 - `--print-password` (dangerous in CI logs)
 
 Optional permissions (RDS/self-managed extras from the root `README.md`) are enabled by default. To skip them:
@@ -89,7 +93,7 @@ npx postgresai prepare-db postgresql://admin@host:5432/dbname --skip-optional-pe
 
 ### Print SQL / dry run
 
-To see what SQL would be executed (passwords redacted by default):
+To see what SQL would be executed (passwords redacted by default; no monitoring password is needed):
 
 ```bash
 npx postgresai prepare-db postgresql://admin@host:5432/dbname --print-sql
@@ -196,8 +200,8 @@ pgai mon deploy 'postgresql://postgres:<password>@<host>:5432/postgres'
 ```
 
 It signs you in if needed, creates the `postgres_ai_mon` role (with an admin URL; otherwise it
-prints the SQL), provisions monitoring in PostgresAI Cloud, waits, and prints two links: the project's Health Matrix in the console
-(`<console>/<org>/projects/<project>/health`, the next step) and Grafana, which signs you in
+prints the SQL), provisions monitoring in PostgresAI Cloud, waits, and prints two links: the project's Database health in the console
+(`<console>/<org>/projects/<project>/health-preview`, the next step) and Grafana, which signs you in
 with your PostgresAI account (`https://<box>/login/generic_oauth?redirectTo=%2F`). Safe to re-run; a `--clickhouse-key` given on a
 re-run is checked, and a rejected one is `action_required`. For ClickHouse Managed Postgres add `--clickhouse-key <key-id>:<key-secret>`
 (a Basic Service API Reader key) for CPU, memory and disk. `--self-hosted` runs the stack on this
@@ -795,10 +799,10 @@ required** — the server will not assume an organization. Call `orgs_list` (or
 run `pgai orgs`) to discover the available ids.
 
 Tools exposed:
-- `list_issues`: returns the same JSON as `postgresai issues list` (args: `{ org_id, status?, hidden_only?, limit?, offset?, debug? }`). Unlike the CLI, omitting `status` returns open and closed issues; pass `status: "open"` to match the CLI default.
+- `list_issues`: returns the same JSON as `postgresai issues list` (args: `{ org_id, status?, hidden_only?, limit?, offset?, debug? }`; 50 issues by default, at most 500), plus a second text block with the total and how to get the next page (`Showing 1–50 of 120 open issues. Use offset=50 for the next page, or limit=120 for all.`). Unlike the CLI, omitting `status` returns open and closed issues; pass `status: "open"` to match the CLI default.
 - `view_issue`: view a single issue with its comments (args: `{ issue_id, org_id, debug? }`).
 - `create_issue`: create a new issue (args: `{ title, description?, org_id, project_id?, labels?, attachments?, is_hidden?, debug? }`).
-- `update_issue`: update title/description/status/labels/is_hidden (args: `{ issue_id, org_id, title?, description?, status?, labels?, attachments?, is_hidden?, debug? }`).
+- `update_issue`: update title/description/status/labels/is_hidden (args: `{ issue_id, org_id, title?, description?, status?, labels?, attachments?, is_hidden?, notify?, debug? }`). `notify: true` with `is_hidden: false` asks for the new-issue email and Slack post (see `--notify` below); a second text item says whether they were requested.
 - `post_issue_comment`: post a comment (args: `{ issue_id, org_id, content?, parent_comment_id?, attachments?, debug? }`).
 - `update_issue_comment`: update an existing comment (args: `{ comment_id, org_id, content?, attachments?, debug? }`).
 - `upload_file`: upload a local file and return the storage URL plus a ready-to-paste markdown link (args: `{ path, org_id, debug? }`).
@@ -850,11 +854,13 @@ sensitive.
 postgresai issues list                                       # List OPEN issues (shows: id, title, status, created_at; is_hidden only when set)
 postgresai issues list --status closed                       # Only closed issues (--status all for both)
 postgresai issues list --hidden-only                         # Only hidden issues (PostgresAI staff)
+postgresai issues list --offset 50                           # Next page (50 per page by default, --limit up to 500)
 postgresai issues view <issueId>                             # View issue details and comments
 postgresai issues create --org-id <id> <title>               # Create a new issue
 postgresai issues create --org-id <id> <title> --hidden      # Create a hidden issue (PostgresAI staff)
 postgresai issues update <issueId> [--title ... --status ...]# Update an existing issue
 postgresai issues update <issueId> --hidden|--no-hidden      # Hide / unhide an issue (PostgresAI staff)
+postgresai issues update <issueId> --no-hidden --notify      # Unhide and send the new-issue email + Slack post (first time only)
 postgresai issues post-comment <issueId> <content>           # Post a comment to an issue
 postgresai issues update-comment <commentId> <content>       # Update an existing comment
 postgresai issues files upload <path>                        # Upload a file, print URL + markdown
@@ -875,6 +881,20 @@ ones, filtered server-side. `issues create --hidden` creates one, and
 (MCP: `is_hidden` on `create_issue` / `update_issue`). The CLI does no staff
 check of its own: the platform refuses a visibility change for a non-staff
 credential with a plain error, and the CLI prints it and exits non-zero.
+
+Making a hidden issue visible is silent unless you add `--notify` (MCP:
+`notify: true`): then the organization gets the new-issue email and Slack post,
+as when staff pick "Make visible and notify" in the Console. The platform sends
+them only the first time an issue becomes visible, and a plain `--no-hidden`
+also uses up that one chance. So the CLI reads the issue first and says what
+happened, on stderr (`--json` output also carries `notify`):
+
+- `Notifications requested: the new-issue email and Slack post go out now.`
+- `Nothing sent: this issue was visible before (<time>); the email and Slack post go out only the first time.`
+- `Nothing sent: the issue is already visible.`
+
+`--notify` needs `--no-hidden`, and a platform without notify support refuses it
+with a message (nothing is unhidden).
 
 Staff access is granted per credential, not per person, and a credential that
 does not qualify simply sees nothing — `--hidden-only` returns an empty list
@@ -1075,8 +1095,8 @@ PGPASSWORD=... postgresai checkup \
 
   ```json
   {
-    "H002": { "contract_version": "1.1.0", "checkId": "H002", "...": "..." },
-    "F003": { "contract_version": "1.1.0", "checkId": "F003", "...": "..." }
+    "H002": { "contract_version": "1.3.0", "checkId": "H002", "...": "..." },
+    "F003": { "contract_version": "1.3.0", "checkId": "F003", "...": "..." }
   }
   ```
 
@@ -1088,12 +1108,22 @@ PGPASSWORD=... postgresai checkup \
 - **stderr** carries only human-readable diagnostics (progress, warnings,
   errors). It never contains report JSON — machine consumers should read stdout
   only. Do not parse stderr of `checkup` as JSON (that of `pgai mon deploy` is JSON lines, see above).
-- **Exit codes**: `0` on success; non-zero when the run fails (connection
-  failure, insufficient permissions, an unknown/unavailable check ID, or a
-  failing check). On a non-zero exit, no JSON report object is written to
-  stdout.
+- **Exit codes** (also in `postgresai checkup --help`):
+  - `0`: all checks completed. Findings (warnings) do not change the exit code.
+  - `1`: error: bad arguments, connection failure, insufficient permissions,
+    an unknown/unavailable check ID, an upload failure, or some checks failed.
+- **stdout on exit `1`**: when some checks failed, stdout still holds the report
+  object of the checks that completed (partial results). When the output
+  directory, API key, connection, permissions, check ID or upload fails before
+  any report, stdout holds one error object instead (argument errors and a
+  missing `--org` print to stderr only, with stdout empty):
+
+  ```json
+  { "success": false, "error": { "message": "..." } }
+  ```
 - Pass `--no-upload` to keep the run fully local (no network calls to the
-  PostgresAI API and no API key required).
+  PostgresAI API, no API key and no organization required, even with a stored
+  global token).
 
 ### Passing credentials
 
@@ -1191,7 +1221,7 @@ A consumer should accept any report whose `contract_version` shares its **major*
 and has a **minor ≥** the minimum it was built against. Pin the major, tolerate
 additive minors, and treat a major bump as a required review.
 
-The current contract version is **`1.1.0`** (1.1.0: in full mode, a node result without data carries `available` and `reason`).
+The current contract version is **`1.3.0`** (1.1.0: A014 `observed_size`; 1.2.0: A005 and K006–K008 facts and chart data, box only; 1.3.0: in full mode, a node result without data carries `available` and `reason`).
 
 ### Envelope fields
 
@@ -1215,7 +1245,7 @@ Beyond the check-specific `results`, every report includes:
 |-------|---------|
 | `data` | The check's findings, usually keyed by database. `{}` when there are none. |
 | `postgres_version` | `{ version, server_version_num, server_major_ver, server_minor_ver }` (most checks). |
-| `available` | Full mode only, and only when `data` is empty (contract 1.1.0). `false`: the report cannot say — not collected yet, the query failed, or a metric that records only findings has none. `true`: the check's metric returned rows for every covered database on the node and none was a finding. |
+| `available` | Full mode only, and only when `data` is empty (contract 1.3.0). `false`: the report cannot say — not collected yet, the query failed, or a metric that records only findings has none. `true`: the check's metric returned rows for every covered database on the node and none was a finding. |
 | `reason` | Full mode only, next to `available`: one plain sentence for the reader. |
 
 Express mode does not emit `available` or `reason`: it queries the database directly, and its

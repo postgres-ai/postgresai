@@ -38,7 +38,7 @@ __version__ = "1.0.2"
 #
 # MUST stay identical to CONTRACT_VERSION in cli/lib/checkup.ts. A cross-language
 # test (cli/test/contract-version.test.ts) asserts the two sources cannot drift.
-CONTRACT_VERSION = "1.1.0"
+CONTRACT_VERSION = "1.3.0"
 
 import requests
 import json
@@ -66,6 +66,8 @@ from reporter import a005 as a005_facts
 from reporter import d001 as d001_facts
 from reporter import d004 as d004_facts
 from reporter import k004 as k004_facts
+from reporter import k005 as k005_facts
+from reporter import kblocks as kblocks_facts
 from reporter import g003 as g003_facts
 from reporter.cf_access import cf_access_headers
 from reporter.logger import logger
@@ -98,6 +100,22 @@ K003_EXPORT_RULE = {"top_n_per_database": 100, "ranked_by": "total_exec_time", "
 K004_WINDOW_METRICS = {**K003_WINDOW_METRICS,
                        "exec_time_ms": "pgwatch_pg_stat_statements_exec_time_total",
                        "temp_bytes_read": "pgwatch_pg_stat_statements_temp_bytes_read"}
+# K005 per-statement window facts: K003's, plus the time, full-page images and WAL records a per-call
+# WAL reading needs (K005-O5: images against records).
+K005_WINDOW_METRICS = {**K003_WINDOW_METRICS,
+                       "exec_time_ms": "pgwatch_pg_stat_statements_exec_time_total",
+                       "wal_fpi": "pgwatch_pg_stat_statements_wal_fpi",
+                       "wal_records": "pgwatch_pg_stat_statements_wal_records"}
+# K006–K008 per-statement window facts (postgresai#534): K003's, plus the time a per-call reading
+# needs (ms per call beside blocks per call: K007-O2, K008-O1) and, in K006, the read time (K006-O3,
+# left out when track_io_timing is off: a zero would read as no read time).
+K007_WINDOW_METRICS = {**K003_WINDOW_METRICS,
+                       "exec_time_ms": "pgwatch_pg_stat_statements_exec_time_total"}
+K008_WINDOW_METRICS = dict(K007_WINDOW_METRICS)
+K006_WINDOW_METRICS = {**K007_WINDOW_METRICS,
+                       "blk_read_time_ms": "pgwatch_pg_stat_statements_block_read_total"}
+#: The reports that carry the chart data CheckupLoop drew from live queries (postgresai#534).
+CHART_DATA_CHECKS = ("A005", "K006", "K007", "K008")
 K003_TEXT_CHARS = 200  # a statement's text in K003: enough to name it, small enough for 100 rows
 K003_TEXT_FETCH_CHARS = 20000  # read this much to find the monitoring marker (test: every collector SQL fits)
 MONITORING_MARKER = "pgwatch_generated"  # the comment every collector statement carries
@@ -386,6 +404,10 @@ class PostgresReportGenerator:
     D001_WINDOW_DAYS = 7
     #: The window over which D004 checks that the statement statistics grow.
     D004_WINDOW_DAYS = 7
+    #: The hourly grid of that window holds one reading or none in a box's first one to two hours
+    #: (the store aligns the steps to the hour), so such a box is read over this last stretch at
+    #: a one-minute step instead.
+    D004_YOUNG_BOX_HOURS = 3
 
     G001_SETTINGS = [
         'shared_buffers',
@@ -420,6 +442,21 @@ class PostgresReportGenerator:
         'max_parallel_workers_per_gather',
         'max_parallel_maintenance_workers',
     ]
+    #: G001 also carries every setting of these pg_settings categories (matched whole, as PromQL's
+    #: =~; PostgreSQL 18 moved the worker, I/O and vacuum settings, both names are here) and these
+    #: memory settings of other categories, per node: what CheckupLoop's live G001 set read from
+    #: the box (protocols G001-O1 "every memory setting"; postgresai#537).
+    G001_CATEGORIES = (
+        "Resource Usage / .*|Autovacuum|Vacuuming / (Automatic Vacuuming|Cost-Based Vacuum Delay)|"
+        "Write-Ahead Log / Checkpoints|Lock Management|"
+        "Client Connection Defaults / Shared Library Preloading|"
+        "Connections and Authentication / Connection Settings"
+    )
+    G001_NAMES = (
+        "effective_cache_size", "wal_buffers", "shared_memory_size", "shared_memory_size_in_huge_pages",
+        "huge_pages_status", "wal_decode_buffer_size", "track_activity_query_size", "max_wal_senders",
+        "max_replication_slots", "max_logical_replication_workers", "max_active_replication_origins",
+    )
 
     #: G001 window for connection peaks, server starts and host memory.
     G001_WINDOW = "7d"
@@ -459,6 +496,10 @@ class PostgresReportGenerator:
         self.postgres_sink_url = postgres_sink_url
         self.pg_conn = None
         self.use_current_time = use_current_time
+        # The end of this run's hourly window, fixed at its first use (_run_window_end): every
+        # report of one run covers the same hours, even when the run crosses an hour boundary.
+        self._window_end_s: Optional[int] = None
+        self._chart_cache: Dict[Any, Any] = {}
         # The pgwatch sources file: A005 connects to each node with its conn_str.
         self.sources_path = sources_path or os.environ.get(
             'REPORTER_SOURCES_PATH', '/postgres_ai_configs/pgwatch-prometheus/sources.yml')
@@ -955,7 +996,10 @@ class PostgresReportGenerator:
             except Exception as err:  # the node: recorded in the file, the run goes on
                 result = a005_facts.unreachable_node(err, conn_str)
                 logger.warning(f"A005: node {node_name} not read: {result['data']['logical_slots_error']}")
-        return self.format_report_data("A005", {node_name: result}, node_name)
+        # The chart data CheckupLoop drew from live queries, from monitoring (postgresai#534): beside
+        # `data`, never in it (the CLI's twin writes `data` alone).
+        result.update(self._kblocks_node(cluster, node_name, self._run_timeline()))
+        return self._attach_scrape_targets(self.format_report_data("A005", {node_name: result}, node_name), cluster)
 
     def generate_d001_logging_report(self, a003_report: Dict[str, Any], cluster: str = "local",
                                      node_name: str = "node-01") -> Dict[str, Any]:
@@ -2393,8 +2437,10 @@ class PostgresReportGenerator:
                      kcache_status: Dict[str, Any], postgres_version: Optional[Dict[str, str]]) -> Dict[str, Any]:
         """The D004 file: the monitoring part as before, plus what an extension decision needs
         (reporter/d004.py) under `observability`: read from the node as for A005, and the rise of
-        the monitored statements' calls over the last D004_WINDOW_DAYS. A fact that cannot be read
-        is left out with its reason, never written as none."""
+        the monitored statements' calls over the last D004_WINDOW_DAYS (while the hourly readings give
+        no window, as in a box's first one to two hours: its last D004_YOUNG_BOX_HOURS at one
+        minute). A fact that cannot be read is left out with its reason,
+        never written as none."""
         facts: Dict[str, Any] = {}
         conn_str = None
         try:
@@ -2419,6 +2465,12 @@ class PostgresReportGenerator:
             query = f'pgwatch_pg_stat_statements_calls{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}'
             windows = d004_facts.monitored_calls_window(self.query_range(query, start, end, step="1h"),
                                                         d001_facts.counter_window)
+            # No hourly window: a young box (the first file is written right after a deploy), or
+            # the query failed (query_range answers [] then too).
+            if not windows:
+                recent = end - timedelta(hours=self.D004_YOUNG_BOX_HOURS)
+                windows = d004_facts.monitored_calls_window(self.query_range(query, recent, end, step="1m"),
+                                                            d001_facts.counter_window)
         except Exception as err:  # monitoring: recorded, the file and the other reports go on
             windows = None
             facts["monitored_calls_window_error"] = a005_facts.error_text(err)
@@ -3354,13 +3406,11 @@ class PostgresReportGenerator:
         _esc = self._escape_promql_label
         logger.info("Generating G001 Memory-related Settings report...")
 
-        memory_settings = self.G001_SETTINGS
-
         # Query all PostgreSQL settings for memory-related settings using last_over_time
         settings_query = f'last_over_time(pgwatch_settings_configured{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])'
         result = self.query_instant(settings_query)
 
-        memory_data = {}
+        node_settings = {}
         if result.get('status') == 'success' and result.get('data', {}).get('result'):
             for item in result['data']['result']:
                 setting_name = item['metric'].get('setting_name', '')
@@ -3369,28 +3419,29 @@ class PostgresReportGenerator:
                 if not setting_name:
                     continue
 
-                # Filter for memory-related settings
-                if setting_name in memory_settings:
-                    setting_value = item['metric'].get('setting_value', '')
-                    category = item['metric'].get('category', 'Memory')
-                    unit = item['metric'].get('unit', '')
-                    context = item['metric'].get('context', '')
-                    vartype = item['metric'].get('vartype', '')
+                setting_value = item['metric'].get('setting_value', '')
+                category = item['metric'].get('category', 'Memory')
+                unit = item['metric'].get('unit', '')
+                context = item['metric'].get('context', '')
+                vartype = item['metric'].get('vartype', '')
 
-                    memory_data[setting_name] = {
-                        "setting": setting_value,
-                        "unit": unit,
-                        "category": category,
-                        "context": context,
-                        "vartype": vartype,
-                        "pretty_value": self.format_setting_value(setting_name, setting_value, unit)
-                    }
+                node_settings[setting_name] = {
+                    "setting": setting_value,
+                    "unit": unit,
+                    "category": category,
+                    "context": context,
+                    "vartype": vartype,
+                    "pretty_value": self.format_setting_value(setting_name, setting_value, unit)
+                }
         else:
             logger.warning(f"G001 - No settings data returned for cluster={cluster}, node_name={node_name}")
+        memory_data = self._g001_settings(node_settings)
 
         # Calculate some memory usage estimates and recommendations
         memory_analysis = self._analyze_memory_settings(memory_data)
         data = {"settings": memory_data, "analysis": memory_analysis}
+        if self._g001_scope_holds(node_settings):
+            data["settings_scope"] = self._g001_settings_scope()
         activity = self._g001_activity(cluster, node_name)
         if activity:
             data["activity"] = activity
@@ -3401,6 +3452,33 @@ class PostgresReportGenerator:
             node_name,
             postgres_version=self._get_postgres_version_info(cluster, node_name),
         )
+
+    def _g001_settings(self, node_settings: Dict[str, Any]) -> Dict[str, Any]:
+        """One node's settings that G001 carries: G001_SETTINGS, G001_NAMES and every setting of
+        G001_CATEGORIES, as the node has them."""
+        names = set(self.G001_SETTINGS) | set(self.G001_NAMES)
+        categories = re.compile(self.G001_CATEGORIES)
+        return {name: info for name, info in sorted(node_settings.items())
+                if name in names or (isinstance(info, dict)
+                                     and categories.fullmatch(str(info.get('category') or '')))}
+
+    #: The category a settings row gets when its metric has none (A003: 'Other'; the direct path:
+    #: 'Memory'): never a pg_settings category.
+    G001_NO_CATEGORY = frozenset({"", "Other", "Memory"})
+
+    def _g001_scope_holds(self, node_settings: Dict[str, Any]) -> bool:
+        """``settings_scope`` may be written: the node's settings were read, each with its
+        pg_settings category. Else a category's settings could be missing unseen, and a file
+        without the scope makes CheckupLoop ask the box, as for an older file."""
+        return bool(node_settings) and all(
+            isinstance(info, dict) and str(info.get('category') or '') not in self.G001_NO_CATEGORY
+            for info in node_settings.values())
+
+    def _g001_settings_scope(self) -> Dict[str, Any]:
+        """What ``settings`` covers. A file without it is older (G001_SETTINGS only), or its
+        settings could not be read whole (``_g001_scope_holds``)."""
+        return {"categories": self.G001_CATEGORIES,
+                "names": sorted(set(self.G001_SETTINGS) | set(self.G001_NAMES))}
 
     def _analyze_memory_settings(self, memory_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -3513,7 +3591,8 @@ class PostgresReportGenerator:
         """What G001 sets the memory settings against, over G001_WINDOW (or since
         the data began): the monitored databases, connections and active statements (peak, when it was
         last reached, mean, samples), the applications with the most connections
-        at their own peak, server starts, statistics resets and fatal session ends, and the host's memory
+        at their own peak, server starts, statistics resets and fatal session ends, each database's
+        temporary files (G001-R3, ``_g001_temp_files``), and the host's memory
         when host metrics are collected (protocols G001-O2, O4). A key whose
         series is empty is left out; {} when nothing could be read.
 
@@ -3604,11 +3683,15 @@ class PostgresReportGenerator:
         # Fatal session ends only: sessions an operator ended or a client dropped are no
         # memory signal, and a report read "killed" as out-of-memory kills.
         for key in ("sessions_fatal",):
-            value = first(f'sum(increase(pgwatch_db_stats_{key}{{{sel}}}[{win}]))')
+            value = first(f'sum({self._g001_rise(f"pgwatch_db_stats_{key}", sel, win)})')
             if value is not None:
                 server[key] = int(round(value))
         if server:
             out["server"] = server
+
+        temp_files = self._g001_temp_files(sel, win, out.get("databases") or [])
+        if temp_files:
+            out["temp_files"] = temp_files
 
         total = first(f'max(last_over_time(host_os_memory_total_bytes{{{sel}}}[3h]))')
         available = f'100 * host_memory_available_bytes{{{sel}}} / host_os_memory_total_bytes{{{sel}}}'
@@ -3623,6 +3706,55 @@ class PostgresReportGenerator:
                 memory["available_p5_pct"] = round(p5, 2)
             out["host_memory"] = memory
         return out
+
+    @staticmethod
+    def _g001_rise(metric: str, sel: str, win: str) -> str:
+        """A per-database counter's rise over the window: the sum of its per-step rises, a drop
+        counted as 0, as F004 counts. increase() does not hold on VictoriaMetrics: a series that
+        starts inside the window (a new box, a new database) is counted from 0, so what it had
+        before the window would count as in it. A floor: a series' first 5 minutes and the step of a
+        counter reset are not counted; a gap in monitoring is bridged, so one that straddles the
+        window start counts whole."""
+        now = f'max by (datname) ({metric}{{{sel}}})'
+        prev = f'max by (datname) (last_over_time({metric}{{{sel}}}[{win}] offset 5m) and {metric}{{{sel}}})'
+        return f'sum_over_time(clamp_min({now} - {prev}, 0)[{win}:5m])'
+
+    G001_TEMP_NOT_KNOWN = "monitoring has fewer than two readings of the counter at least 5 minutes apart in the window"
+    G001_TEMP_NOT_ANSWERED = "monitoring did not answer the query"
+
+    def _g001_temp_files(self, sel: str, win: str, databases: Sequence[str]) -> List[Dict[str, Any]]:
+        """Each database's temporary-file bytes and count over the window (pg_stat_database; protocols
+        G001-R3: a work_mem raise needs temp-file evidence). A counter with fewer than two readings
+        in the window, or a failed query, is not known (``<key>_error``), never 0. The databases:
+        ``databases`` (monitored now) and any other with a reading in the window (dropped since),
+        except the excluded databases."""
+        def by_db(query: str) -> Optional[Dict[str, float]]:
+            result = self.query_instant(query)
+            if result.get('status') != 'success':
+                return None
+            out: Dict[str, float] = {}
+            for row in (result.get('data') or {}).get('result') or []:
+                value = self._f001_number(row)
+                if value is not None:
+                    out[(row.get('metric') or {}).get('datname') or ''] = value
+            return out
+
+        metrics = (("bytes", "pgwatch_db_stats_temp_bytes"), ("files", "pgwatch_db_stats_temp_files"))
+        answers = {key: (by_db(f'max by (datname) (count_over_time({metric}{{{sel}}}[{win}]))'),
+                         by_db(self._g001_rise(metric, sel, win)))
+                   for key, metric in metrics}
+        seen = {db for readings, _ in answers.values() for db in (readings or {})}
+        names = (set(databases) | seen) - {''} - set(self.excluded_databases)
+        rows: Dict[str, Dict[str, Any]] = {db: {"database": db} for db in sorted(names)}
+        for key, (readings, grown) in answers.items():
+            for db, row in rows.items():
+                if readings is None or grown is None:
+                    row[f"{key}_error"] = self.G001_TEMP_NOT_ANSWERED
+                elif readings.get(db, 0) >= 2 and db in grown:
+                    row[key] = int(round(grown[db]))
+                else:
+                    row[f"{key}_error"] = self.G001_TEMP_NOT_KNOWN
+        return list(rows.values())
 
     def generate_f004_heap_bloat_report(self, cluster: str = "local", node_name: str = "node-01") -> Dict[str, Any]:
         """
@@ -4068,7 +4200,6 @@ class PostgresReportGenerator:
         """
         logger.info("Generating K003 Top Queries by total_time (exec + plan) report...")
         self._k003_text_cache = None  # this report's sink read (_k003_texts)
-        self._k003_text_scope = (cluster, node_name)
 
         # Get all databases
         databases = self.get_all_databases(cluster, node_name)
@@ -4747,7 +4878,14 @@ class PostgresReportGenerator:
     def generate_k005_wal_bytes_report(self, cluster: str = "local", node_name: str = "node-01",
                                        time_range_minutes: int = 60, limit: int = 100, use_hourly: bool = True) -> Dict[str, Any]:
         """
-        Generate K005 Top Queries by WAL generation report.
+        Generate K005 Top queries by WAL generation report.
+
+        Per database: the statements that wrote WAL (hourly top 3 union, zero rows dropped), each with
+        K003's window facts plus its full-page images and WAL records. Per node, over the same window
+        (reporter/k005.py): the server's WAL, each database's size at the start and the end,
+        checkpoints, the archiver, the pg_wal directory, the most-updated tables and their HOT share,
+        WAL-write wait samples; from the node, the WAL settings with their context, the replication
+        slots and the indexes of the most-updated tables.
 
         Args:
             cluster: Cluster name
@@ -4760,6 +4898,7 @@ class PostgresReportGenerator:
             Dictionary containing top queries sorted by WAL bytes generated
         """
         logger.info("Generating K005 Top Queries by WAL generation report...")
+        self._k003_text_cache = None  # this report's sink read (_k003_texts)
 
         # Get all databases
         databases = self.get_all_databases(cluster, node_name)
@@ -4768,6 +4907,7 @@ class PostgresReportGenerator:
             logger.warning("K005 - No databases found")
 
         queries_by_db = {}
+        timeline: List[int] = []
 
         if use_hourly and time_range_minutes >= 60:
             # Use hourly topk aggregation
@@ -4777,18 +4917,22 @@ class PostgresReportGenerator:
             for db_name in databases:
                 logger.info(f"K005: Processing database {db_name} (hourly mode)...")
 
-                per_query, other, timeline = self._get_hourly_topk_pgss_data(
+                per_query, other, db_timeline = self._get_hourly_topk_pgss_data(
                     cluster, node_name, db_name, metric_name, hours=hours
                 )
+                timeline = timeline or db_timeline
 
                 if not per_query and sum(other) == 0:
                     logger.warning(f"K005 - No query metrics returned for database {db_name}")
                     continue  # Skip databases with no data
 
-                # Calculate total WAL bytes per query across all hours
+                # Calculate total WAL bytes per query across all hours. A statement in an hour's top 3 with
+                # no WAL in the window (a quiet hour ranks zeros) wrote none.
                 query_totals = []
                 for queryid, hourly_values in per_query.items():
                     total_bytes = sum(hourly_values)
+                    if total_bytes <= 0:
+                        continue
                     query_totals.append({
                         "queryid": queryid,
                         "total_wal_bytes": total_bytes,
@@ -4797,6 +4941,14 @@ class PostgresReportGenerator:
 
                 # Sort by total_wal_bytes (descending) and limit to top N
                 sorted_metrics = sorted(query_totals, key=lambda x: x.get('total_wal_bytes', 0), reverse=True)[:limit]
+
+                # Per statement, over the same hourly window: calls, time, rows, buffers, full-page images and
+                # WAL records, and its text, so a reader gets per-call figures and tells our monitoring apart.
+                window = self._k003_window_facts(cluster, node_name, db_name,
+                                                 [q['queryid'] for q in sorted_metrics], db_timeline,
+                                                 metrics=K005_WINDOW_METRICS)
+                for q in sorted_metrics:
+                    q.update(window["per_query"].get(q['queryid'], {}))
 
                 # Calculate totals
                 total_bytes = sum(q.get('total_wal_bytes', 0) for q in sorted_metrics) + sum(other)
@@ -4810,20 +4962,412 @@ class PostgresReportGenerator:
                         "total_wal_bytes_tracked_queries": sum(q.get('total_wal_bytes', 0) for q in sorted_metrics),
                         "total_wal_bytes_other": sum(other),
                         "time_range_hours": hours,
-                        "hourly_timestamps": timeline,
-                        "limit": limit
+                        "hourly_timestamps": db_timeline,
+                        "limit": limit,
+                        **window["summary"],
+                        **self._k005_statement_totals(cluster, node_name, db_name, db_timeline),
                     }
                 }
+            if not timeline:  # no database answered: the server facts still get the same window
+                timeline = self._run_timeline(hours)
         else:
             # Fallback for sub-hourly (not typically needed)
             pass
 
-        return self.format_report_data(
+        report = self.format_report_data(
             "K005",
             queries_by_db,
             node_name,
             postgres_version=self._get_postgres_version_info(cluster, node_name),
         )
+        node = (report.get("results") or {}).get(node_name)
+        if isinstance(node, dict) and timeline:
+            node.update(self._k005_server(cluster, node_name, databases, timeline))
+        return report
+
+    def _k005_statement_totals(self, cluster: str, node_name: str, db_name: str,
+                               timeline: List[int]) -> Dict[str, Any]:
+        """All exported statements' WAL, full-page images and records of one database over the window (not only
+        the top rows): the statements' share of the server's WAL (K005-O3) and of its records (K005-O5)."""
+        if not timeline:
+            return {}
+        _esc = self._escape_promql_label
+        f_all = f'{{cluster="{_esc(cluster)}",node_name="{_esc(node_name)}",datname="{_esc(db_name)}"}}'
+        start, end = datetime.fromtimestamp(timeline[0]), datetime.fromtimestamp(timeline[-1])
+        out: Dict[str, Any] = {}
+        for key, metric in (("statements_wal_fpi", "pgwatch_pg_stat_statements_wal_fpi"),
+                            ("statements_wal_records", "pgwatch_pg_stat_statements_wal_records")):
+            try:
+                result = self.query_range(f"sum(increase({metric}{f_all}[1h]))", start, end, step="3600s")
+            except Exception as e:  # one failed metric must not lose the report
+                logger.warning(f"K005 {key} failed ({db_name}): {e}")
+                continue
+            values = list(self._to_series_map(result).get("__single__", {}).values())
+            if values:
+                out[key] = sum(values)
+        return out
+
+    def _k005_server(self, cluster: str, node_name: str, databases: List[str],
+                     timeline: List[int]) -> Dict[str, Any]:
+        """The node's WAL facts over the hourly window `timeline` (reporter/k005.py). Each fact is read on its own:
+        one that fails is "<key>_error", the others go on."""
+        _esc = self._escape_promql_label
+        node = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"'
+        start, end = datetime.fromtimestamp(timeline[0] - 3600), datetime.fromtimestamp(timeline[-1])
+        step = f"{k005_facts.STEP_S}s"
+        out: Dict[str, Any] = {"window_start": datetime.fromtimestamp(timeline[0] - 3600, tz=timezone.utc).isoformat(),
+                               "window_end": datetime.fromtimestamp(timeline[-1], tz=timezone.utc).isoformat()}
+        none = "monitoring has fewer than two readings in the window"
+
+        def _range(expr: str, key: str, step_s: str = step,
+                   first: Optional[datetime] = None) -> Optional[List[Dict[str, Any]]]:
+            try:
+                return self.query_range(expr, first or start, end, step=step_s)
+            except Exception as e:
+                logger.warning(f"K005 {key} failed: {e}")
+                out[f"{key}_error"] = str(e)[:200]
+                return None
+
+        # The server's WAL: the rise of the WAL position (K005-O1).
+        series = _range(f"pgwatch_wal_xlog_location_b{{{node}}}", "wal")
+        if series is not None:
+            wal = k005_facts.window_counter(series, timeline)
+            if wal:
+                peak = k005_facts.peak_span(series)
+                if peak:
+                    wal["peak_15m"] = peak
+                out["wal"] = wal
+            else:
+                out["wal_error"] = none
+
+        # Each database's size at the start and the end (K005-O2): net growth, not bytes changed.
+        series = _range(f"max by (datname) (pgwatch_db_size_size_b{{{node}}})", "database_sizes")
+        if series is not None:
+            sizes = {}
+            for item in series:
+                db = (item.get("metric") or {}).get("datname")
+                ends = k005_facts.gauge_ends([item]) if db else None
+                if ends:
+                    sizes[db] = ends
+            if sizes:
+                out["database_sizes"] = sizes
+            else:
+                out["database_sizes_error"] = "monitoring has no database size reading in the window"
+
+        # Checkpoints timed and requested (K005-O5): pg_stat_checkpointer (17+), else pg_stat_bgwriter.
+        checkpoints = {}
+        for key, names in (("timed", ("pgwatch_checkpointer_num_timed", "pgwatch_bgwriter_checkpoints_timed")),
+                           ("requested", ("pgwatch_checkpointer_num_requested", "pgwatch_bgwriter_checkpoints_req"))):
+            for metric in names:
+                series = _range(f"{metric}{{{node}}}", f"checkpoints_{key}")
+                window = k005_facts.window_counter(series or [], timeline)
+                if window:
+                    checkpoints[key] = window
+                    out.pop(f"checkpoints_{key}_error", None)
+                    break
+            else:
+                out.setdefault(f"checkpoints_{key}_error", none)
+        if checkpoints:
+            out["checkpoints"] = checkpoints
+
+        # The archiver (K005-O7): segments archived, failures, the longest time since an archived segment.
+        archiver: Dict[str, Any] = {}
+        series = _range(f"pgwatch_archive_lag_archived_count{{{node}}}", "archiver")
+        if series:
+            archiver["segment_bytes"] = k005_facts.segment_bytes(series)
+            archived = k005_facts.window_counter(series, timeline)
+            if archived:
+                archiver["archived"] = archived
+            else:
+                out.setdefault("archiver_error", none)
+        series = _range(f"pgwatch_archive_lag_failed_count{{{node}}}", "archiver_failed")
+        failed = k005_facts.window_counter(series or [], timeline)
+        if failed:
+            archiver["failed"] = failed
+        else:
+            out.setdefault("archiver_failed_error", none)
+        series = _range(f"pgwatch_archive_lag_seconds_since_archive{{{node}}}", "archiver_gap")
+        gap = k005_facts.gauge_max(series or [])
+        if gap:
+            archiver["longest_gap_s"] = gap["max"]
+            archiver["longest_gap_at"] = gap["max_at"]
+        else:
+            out.setdefault("archiver_gap_error", "monitoring has no archiver reading in the window")
+        archiver = {k: v for k, v in archiver.items() if v is not None}
+        if archiver:
+            out["archiver"] = archiver
+        else:
+            out.setdefault("archiver_error", "monitoring has no archiver reading in the window")
+
+        # The pg_wal directory (K005-O6, howto 0031).
+        series = _range(f"max(pgwatch_pg_wal_size_bytes{{{node}}})", "pg_wal")
+        pg_wal = k005_facts.gauge_ends(series or [])
+        if pg_wal:
+            out["pg_wal"] = {"max": pg_wal["max"], "max_at": pg_wal["max_at"], "last": pg_wal["last"]}
+        else:  # query_range answers [] on an error too: say why, never leave it out silently
+            out.setdefault("pg_wal_error", "monitoring has no pg_wal size reading in the window")
+
+        # WAL-write waits against all session samples (K005-O7).
+        series = _range(f'sum by (wait_event) (sum_over_time(pgwatch_wait_events_total{{{node}, '
+                        f'wait_event_type!~"{k005_facts.IDLE_WAIT_TYPES}"}}[1h]))', "wal_waits", "3600s",
+                        # each point sums the hour before it: from the first hour's end, N points for N hours
+                        first=datetime.fromtimestamp(timeline[0]))
+        waits = k005_facts.wait_share(series or [])
+        if waits:
+            out["wal_waits"] = waits
+        else:
+            out.setdefault("wal_waits_error", "monitoring has no session sample in the window")
+
+        # The most-updated tables over the window and their HOT share (K005-O4).
+        tables = self._k005_tables(cluster, node_name, timeline, start, end, out)
+        if tables:
+            out["tables"] = tables
+
+        # From the node: settings with context, slots, the top tables' indexes.
+        conn_str = next((src["conn_str"] for src in read_sources(self.sources_path)
+                         if src["cluster"] == cluster and src["node_name"] == node_name and src["conn_str"]), None)
+        from_node = k005_facts.node_facts(conn_str, tables)
+        indexes = from_node.pop("indexes", None) or {}
+        for table in tables:
+            found = indexes.get(f'{table["schema"]}.{table["table"]}')
+            if found is not None:
+                table["indexes"] = found
+        out.update(from_node)
+        if not out.get("settings"):
+            names = "|".join(k005_facts.SETTINGS)
+            try:
+                settings = k005_facts.settings_from_monitoring(self.query_instant(
+                    f'last_over_time(pgwatch_settings_configured{{{node}, setting_name=~"{names}"}}[3h]) or '
+                    f'last_over_time(pgwatch_settings_configured{{{node}, tag_setting_name=~"{names}"}}[3h])'))
+            except Exception as e:
+                settings = {}
+                logger.warning(f"K005 settings failed: {e}")
+            if settings:
+                out["settings"] = settings
+                out.pop("settings_error", None)
+            else:
+                out.setdefault("settings_error", "monitoring has no reading of these settings")
+        return out
+
+    def _k005_tables(self, cluster: str, node_name: str, timeline: List[int], start: datetime, end: datetime,
+                     out: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """The TOP_TABLES tables with the most updates in the window: updates, HOT updates, inserts, deletes
+        (each the counter's rise, merged over the series a size-label change starts), and the table's size."""
+        _esc = self._escape_promql_label
+        node = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"'
+        seconds = int(timeline[-1] - timeline[0] + 3600)
+        try:
+            # pgwatch sums the tables past its top 100 into schema "$other$": not a table. Ranked at the
+            # window's end, as the counters are read.
+            def ranking(at: str) -> str:
+                return (f"topk({k005_facts.TABLE_CANDIDATES}, sum by (datname, schema, table_name) "
+                        f"(increase(pgwatch_table_stats_n_tup_upd{{{node}, schema!=\"$other$\"}}[{seconds}s]{at})) > 0)")
+            ranked = self._instant_at(ranking(""), timeline[-1], vm_query=ranking(f" @ {int(timeline[-1])}"))
+        except Exception as e:
+            out["tables_error"] = str(e)[:200]
+            return []
+        candidates = []
+        for item in ((ranked or {}).get("data") or {}).get("result") or []:
+            m = item.get("metric") or {}
+            if m.get("datname") and m.get("schema") and m.get("table_name"):
+                candidates.append((m["datname"], m["schema"], m["table_name"]))
+        if not candidates:  # [] on an error too: say why, never leave it out silently
+            out.setdefault("tables_error", "no table was updated in the window, or monitoring has no table reading")
+        tables = []
+        for db, schema, table in candidates:
+            where = (f'{node}, datname="{_esc(db)}", schema="{_esc(schema)}", table_name="{_esc(table)}"')
+            entry: Dict[str, Any] = {"database": db, "schema": schema, "table": table}
+            for key, column in (("updates", "n_tup_upd"), ("hot_updates", "n_tup_hot_upd"),
+                                ("inserts", "n_tup_ins"), ("deletes", "n_tup_del")):
+                try:
+                    series = self.query_range(f"pgwatch_table_stats_{column}{{{where}}}", start, end,
+                                              step=f"{k005_facts.STEP_S}s")
+                except Exception as e:
+                    logger.warning(f"K005 table {key} failed ({schema}.{table}): {e}")
+                    continue
+                window = k005_facts.window_counter(series, timeline)
+                if window:
+                    entry[key] = window["total"]
+            try:
+                size = self.query_range(f"max(pgwatch_table_stats_total_relation_size_b{{{where}}})", start, end,
+                                        step="3600s")
+                ends = k005_facts.gauge_ends(size)
+                if ends:
+                    entry["total_bytes"] = ends["last"]
+            except Exception as e:
+                logger.warning(f"K005 table size failed ({schema}.{table}): {e}")
+            if entry.get("updates"):
+                tables.append(entry)
+        if candidates and not tables:  # every per-table read came back empty ([] on an error too)
+            out.setdefault("tables_error", "monitoring has no update reading for the ranked tables in the window")
+        tables.sort(key=lambda t: t["updates"], reverse=True)
+        return tables[:k005_facts.TOP_TABLES]
+
+    # ── K006–K008 facts and the chart data (postgresai#534, reporter/kblocks.py) ──────────────────
+
+    def _run_timeline(self, hours: int = 24) -> List[int]:
+        """This run's hourly timeline (each stamp the end of its hour), ending at `_run_window_end`."""
+        return self._build_timeline(self._run_window_end(), hours, 3600)[1]
+
+    def _instant_at(self, query: str, at: int, vm_query: Optional[str] = None) -> Dict[str, Any]:
+        """An instant query evaluated at `at`, not at the time of the call. pgai-mon evaluates `query`
+        at that time (its PromQL subset has no `@` modifier); VictoriaMetrics gets `vm_query`, by
+        default `query` with the `@` modifier."""
+        if self.mon:
+            return self.mon.query_instant(query, at=int(at))
+        return self.query_instant(vm_query if vm_query is not None else f"{query} @ {int(at)}")
+
+    def _kblocks_settings(self, cluster: str, node_name: str, timeline: List[int]) -> Dict[str, Any]:
+        """block_size and track_io_timing from monitoring at the window's end, and whether
+        track_io_timing changed within it (kblocks.settings_facts)."""
+        _esc = self._escape_promql_label
+        where = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"'
+        end = timeline[-1]
+
+        def latest(lookback: str) -> Dict[str, Any]:
+            # Each value is its own series (setting_value is a label): the time of each series' last reading
+            # tells the value now from one it replaced within the lookback. Older pgwatch configs keep the
+            # tag_ prefix on the label (as K004 and K005 read it).
+            parts = [f'tlast_over_time(pgwatch_settings_configured{{{where}, {label}=~"{kblocks_facts.SETTING_PATTERN}"}}'
+                     f'[{lookback}])' for label in ("setting_name", "tag_setting_name")]
+            return self._instant_at(" or ".join(parts), end,
+                                    vm_query=" or ".join(f"{part} @ {int(end)}" for part in parts))
+
+        return kblocks_facts.settings_facts(latest("3h"), latest(f"{len(timeline)}h"))
+
+    def _kblocks_hourly_calls(self, cluster: str, node_name: str, db_name: str, queryids: List[str],
+                              timeline: List[int]) -> Dict[str, List[Optional[float]]]:
+        """Each statement's calls per hour of the window (None for an hour it was not exported)."""
+        if not queryids or not timeline:
+            return {}
+        _esc = self._escape_promql_label
+        f_q = (f'{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}", '
+               f'queryid=~"{self._build_qid_regex(queryids)}"}}')
+        try:
+            result = self.query_range(f"sum by (queryid) (increase(pgwatch_pg_stat_statements_calls{f_q}[1h]))",
+                                      datetime.fromtimestamp(timeline[0]), datetime.fromtimestamp(timeline[-1]),
+                                      step="3600s")
+        except Exception as e:  # one failed metric must not lose the report
+            logger.warning(f"K006-K008 hourly calls failed ({db_name}): {e}")
+            return {}
+        series = self._to_series_map(result)
+        return {qid: kblocks_facts.hourly_values(series[qid], timeline) for qid in queryids if qid in series}
+
+    def _kblocks_database(self, cluster: str, node_name: str, db_name: str,
+                          timeline: List[int]) -> Dict[str, Any]:
+        """The database over the window: block reads and hits (pg_stat_database, per hour), its size at
+        the window's end, and when its statistics were last reset (None: never). A fact that cannot be
+        read is "<key>_error" with its reason."""
+        _esc = self._escape_promql_label
+        where = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"'
+        out: Dict[str, Any] = {}
+        start, end = datetime.fromtimestamp(timeline[0] - 3600), datetime.fromtimestamp(timeline[-1])
+        blocks: Dict[str, Any] = {}
+        for key, metric in (("read", "pgwatch_db_stats_blks_read"), ("hit", "pgwatch_db_stats_blks_hit")):
+            try:
+                series = self.query_range(f"{metric}{{{where}}}", start, end, step=f"{k004_facts.STEP_S}s")
+            except Exception as e:
+                logger.warning(f"K006-K008 {metric} failed ({db_name}): {e}")
+                series = []
+            window = k004_facts.counter_hours(series, timeline)
+            if window is None:  # query_range answers [] on an error too: not known, never zero
+                blocks[f"{key}_error"] = kblocks_facts.NO_COUNTER
+            else:
+                blocks[key] = window
+        out["database_blocks"] = blocks
+        size = self._instant_at(f"max(last_over_time(pgwatch_db_size_size_b{{{where}}}[3h]))", timeline[-1])
+        rows = (size.get("data") or {}).get("result") or [] if size.get("status") == "success" else None
+        if rows:
+            out["database_size_bytes"] = float(rows[0]["value"][1])
+        else:
+            out["database_size_error"] = ("the monitoring query failed" if rows is None
+                                          else "monitoring has no size for this database")
+        failed = True
+        node_sel = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"'
+        for db_label in ("database_name", "datname"):  # pgwatch labels it database_name; older sinks datname
+            reset = self._instant_at(
+                f'last_over_time(pgwatch_stats_reset_stats_reset_epoch{{{node_sel}, {db_label}="{_esc(db_name)}"}}'
+                f'[{len(timeline)}h])', timeline[-1])  # the window: the same span as the readings that prove collection
+            if reset.get("status") != "success":
+                continue
+            failed = False
+            found = (reset.get("data") or {}).get("result") or []
+            if found:
+                epoch = float(found[0]["value"][1])
+                out["stats_reset"] = datetime.fromtimestamp(epoch, timezone.utc).isoformat() if epoch > 0 else None
+                break
+        if not failed and "stats_reset" not in out:
+            # The metric has a row only after a reset, and like db_stats and db_size only for the database a
+            # source connects to: no row is "never reset" only where this database's own pg_stat_database
+            # readings are collected; otherwise it cannot be told apart from "not collected".
+            if "read" in blocks or "hit" in blocks or "database_size_bytes" in out:
+                out["stats_reset"] = None
+            else:
+                out["stats_reset_error"] = ("monitoring has no statistics of this database (pgwatch reads "
+                                            "pg_stat_database of the database it connects to)")
+        elif failed:
+            out["stats_reset_error"] = "the monitoring query failed"
+        return out
+
+    def _kblocks_rows(self, cluster: str, node_name: str, db_name: str, rows: List[Dict[str, Any]],
+                      timeline: List[int], metrics: Dict[str, str], timing: Optional[bool]) -> Dict[str, Any]:
+        """Adds K003's window facts (with `metrics`) and the calls per hour to each row; returns the
+        summary facts of the database (K003's window summary and `_kblocks_database`)."""
+        qids = [q["queryid"] for q in rows]
+        if timing is not True:  # off, or not known: no read time a reader could take for zero
+            metrics = {key: metric for key, metric in metrics.items() if key != "blk_read_time_ms"}
+        window = self._k003_window_facts(cluster, node_name, db_name, qids, timeline, metrics=metrics)
+        hourly = self._kblocks_hourly_calls(cluster, node_name, db_name, qids, timeline)
+        for q in rows:
+            q.update(window["per_query"].get(q["queryid"], {}))
+            if q["queryid"] in hourly:
+                q["hourly_calls"] = hourly[q["queryid"]]
+        summary = {**window["summary"], **self._kblocks_database(cluster, node_name, db_name, timeline)}
+        if qids and not hourly:  # a ranked statement always has calls: no series at all is a failed query
+            summary["hourly_calls_error"] = "the monitoring query failed or answered no series"
+        return summary
+
+    def _kblocks_node(self, cluster: str, node_name: str, timeline: List[int]) -> Dict[str, Any]:
+        """The node's deadlocks per database over this run's window (cached per node: the same in
+        A005 and K006–K008)."""
+        key = ("deadlocks", str(cluster), str(node_name), timeline[0], timeline[-1])
+        cache = self.__dict__.setdefault("_chart_cache", {})
+        if key not in cache:
+            _esc = self._escape_promql_label
+            try:
+                series = self.query_range(
+                    f'pgwatch_db_stats_deadlocks{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}',
+                    datetime.fromtimestamp(timeline[0] - 3600), datetime.fromtimestamp(timeline[-1]),
+                    step=f"{k004_facts.STEP_S}s")
+            except Exception as e:
+                logger.warning(f"Deadlocks for the chart data failed ({node_name}): {e}")
+                series = []
+            found = kblocks_facts.deadlocks_by_database(series, timeline)
+            cache[key] = ({"deadlocks": found} if found else
+                          {"deadlocks_error": kblocks_facts.NO_COUNTER})
+        return dict(cache[key])
+
+    def _attach_scrape_targets(self, report: Dict[str, Any], cluster: Optional[str] = None) -> Dict[str, Any]:
+        """The report with the monitoring stack's scrape targets at the window's end (once per run and
+        cluster; a target labelled with another cluster is left out)."""
+        cache = self.__dict__.setdefault("_chart_cache", {})
+        key = ("scrape_targets", str(cluster))
+        if key not in cache:
+            # pgai-mon's `up` is one series per source with no cluster label: the sources file says
+            # which of them belong to another cluster.
+            other = ({src["name"] for src in read_sources(self.sources_path)
+                      if src.get("name") and src.get("cluster") not in (None, "", cluster)}
+                     if self.mon and cluster is not None else set())
+            cache[key] = kblocks_facts.scrape_targets(self._instant_at("up", self._run_window_end()), cluster,
+                                                      other)
+        targets, reason = cache[key]
+        report.pop("scrape_targets", None)
+        report.pop("scrape_targets_error", None)
+        if targets is not None:
+            report["scrape_targets"] = targets
+        else:
+            report["scrape_targets_error"] = reason
+        return report
 
     def generate_k006_shared_read_report(self, cluster: str = "local", node_name: str = "node-01",
                                          time_range_minutes: int = 60, limit: int = 100, use_hourly: bool = True) -> Dict[str, Any]:
@@ -4849,6 +5393,11 @@ class PostgresReportGenerator:
             logger.warning("K006 - No databases found")
 
         queries_by_db = {}
+        # Node facts first: whether the read time can be trusted decides K006's row keys (postgresai#534).
+        run_timeline = self._run_timeline(max(1, time_range_minutes // 60))
+        node_settings = self._kblocks_settings(cluster, node_name, run_timeline)
+        timing = kblocks_facts.timing_on(node_settings.get("settings") or {})
+        self._k003_text_cache = None  # this report's sink read (_k003_texts)
 
         if use_hourly and time_range_minutes >= 60:
             # Use hourly topk aggregation
@@ -4882,6 +5431,11 @@ class PostgresReportGenerator:
                 # Calculate totals
                 total_bytes = sum(q.get('total_shared_read_bytes', 0) for q in sorted_metrics) + sum(other)
 
+                # Per statement, over the same hourly window: K003's facts, its time and read time,
+                # its calls per hour; per database: blocks read and hit, size, last statistics reset.
+                database_facts = self._kblocks_rows(cluster, node_name, db_name, sorted_metrics, timeline,
+                                                    K006_WINDOW_METRICS, timing)
+
                 queries_by_db[db_name] = {
                     "top_queries": sorted_metrics,
                     "other_shared_read_bytes_hourly": other,
@@ -4892,19 +5446,25 @@ class PostgresReportGenerator:
                         "total_shared_read_bytes_other": sum(other),
                         "time_range_hours": hours,
                         "hourly_timestamps": timeline,
-                        "limit": limit
+                        "limit": limit,
+                        **database_facts,
                     }
                 }
         else:
             # Fallback for sub-hourly (not typically needed)
             pass
 
-        return self.format_report_data(
+        report = self.format_report_data(
             "K006",
             queries_by_db,
             node_name,
             postgres_version=self._get_postgres_version_info(cluster, node_name),
         )
+        node = (report.get("results") or {}).get(node_name)
+        if isinstance(node, dict):
+            node.update(node_settings)
+            node.update(self._kblocks_node(cluster, node_name, run_timeline))
+        return self._attach_scrape_targets(report, cluster)
 
     def generate_k007_shared_hit_report(self, cluster: str = "local", node_name: str = "node-01",
                                         time_range_minutes: int = 60, limit: int = 100, use_hourly: bool = True) -> Dict[str, Any]:
@@ -4930,6 +5490,11 @@ class PostgresReportGenerator:
             logger.warning("K007 - No databases found")
 
         queries_by_db = {}
+        # Node facts: `settings` for the file (postgresai#534); `timing` matters only for K006's read time.
+        run_timeline = self._run_timeline(max(1, time_range_minutes // 60))
+        node_settings = self._kblocks_settings(cluster, node_name, run_timeline)
+        timing = kblocks_facts.timing_on(node_settings.get("settings") or {})
+        self._k003_text_cache = None  # this report's sink read (_k003_texts)
 
         if use_hourly and time_range_minutes >= 60:
             # Use hourly topk aggregation
@@ -4963,6 +5528,11 @@ class PostgresReportGenerator:
                 # Calculate totals
                 total_bytes = sum(q.get('total_shared_hit_bytes', 0) for q in sorted_metrics) + sum(other)
 
+                # Per statement, over the same hourly window: K003's facts, its time,
+                # its calls per hour; per database: blocks read and hit, size, last statistics reset.
+                database_facts = self._kblocks_rows(cluster, node_name, db_name, sorted_metrics, timeline,
+                                                    K007_WINDOW_METRICS, timing)
+
                 queries_by_db[db_name] = {
                     "top_queries": sorted_metrics,
                     "other_shared_hit_bytes_hourly": other,
@@ -4973,19 +5543,25 @@ class PostgresReportGenerator:
                         "total_shared_hit_bytes_other": sum(other),
                         "time_range_hours": hours,
                         "hourly_timestamps": timeline,
-                        "limit": limit
+                        "limit": limit,
+                        **database_facts,
                     }
                 }
         else:
             # Fallback for sub-hourly (not typically needed)
             pass
 
-        return self.format_report_data(
+        report = self.format_report_data(
             "K007",
             queries_by_db,
             node_name,
             postgres_version=self._get_postgres_version_info(cluster, node_name),
         )
+        node = (report.get("results") or {}).get(node_name)
+        if isinstance(node, dict):
+            node.update(node_settings)
+            node.update(self._kblocks_node(cluster, node_name, run_timeline))
+        return self._attach_scrape_targets(report, cluster)
 
     def generate_k008_shared_hit_read_report(
         self,
@@ -5021,6 +5597,11 @@ class PostgresReportGenerator:
             logger.warning("K008 - No databases found")
 
         queries_by_db: Dict[str, Any] = {}
+        # Node facts: `settings` for the file (postgresai#534); `timing` matters only for K006's read time.
+        run_timeline = self._run_timeline(max(1, time_range_minutes // 60))
+        node_settings = self._kblocks_settings(cluster, node_name, run_timeline)
+        timing = kblocks_facts.timing_on(node_settings.get("settings") or {})
+        self._k003_text_cache = None  # this report's sink read (_k003_texts)
 
         if use_hourly and time_range_minutes >= 60:
             # Use hourly topk aggregation
@@ -5065,6 +5646,11 @@ class PostgresReportGenerator:
                 other_total = sum(other)
                 total_bytes = tracked_total + other_total
 
+                # Per statement, over the same hourly window: K003's facts, its time,
+                # its calls per hour; per database: blocks read and hit, size, last statistics reset.
+                database_facts = self._kblocks_rows(cluster, node_name, db_name, sorted_metrics, timeline,
+                                                    K008_WINDOW_METRICS, timing)
+
                 queries_by_db[db_name] = {
                     "top_queries": sorted_metrics,
                     "other_shared_hit_read_bytes_hourly": other,
@@ -5076,18 +5662,24 @@ class PostgresReportGenerator:
                         "time_range_hours": hours,
                         "hourly_timestamps": timeline,
                         "limit": limit,
+                        **database_facts,
                     },
                 }
         else:
             # Fallback for sub-hourly (not typically needed)
             pass
 
-        return self.format_report_data(
+        report = self.format_report_data(
             "K008",
             queries_by_db,
             node_name,
             postgres_version=self._get_postgres_version_info(cluster, node_name),
         )
+        node = (report.get("results") or {}).get(node_name)
+        if isinstance(node, dict):
+            node.update(node_settings)
+            node.update(self._kblocks_node(cluster, node_name, run_timeline))
+        return self._attach_scrape_targets(report, cluster)
 
     def generate_n001_wait_events_report(self, cluster: str = "local", node_name: str = "node-01",
                                          hours: int = 24) -> Dict[str, Any]:
@@ -5115,9 +5707,8 @@ class PostgresReportGenerator:
         if not databases:
             logger.warning("N001 - No databases found")
 
-        # Build timeline
-        now = int(time.time())
-        end_s = self._floor_hour(now)
+        # Build timeline (the run's window: the same hours as the K reports)
+        end_s = self._run_window_end()
         first_bucket_end_s, timeline = self._build_timeline(end_s, hours, step_s=3600)
         range_start_s = first_bucket_end_s - 3600
 
@@ -5694,6 +6285,13 @@ class PostgresReportGenerator:
             return ts
         return (ts // 3600) * 3600
 
+    def _run_window_end(self) -> int:
+        """The end of this run's hourly window (`_floor_hour` of the time of its first use), the same for
+        every report of the run: A005 and K006–K008 carry the same chart window (postgresai#534)."""
+        if getattr(self, "_window_end_s", None) is None:
+            self._window_end_s = self._floor_hour(int(time.time()))
+        return self._window_end_s
+
     def _build_timeline(self, end_s: int, hours: int = 24, step_s: int = 3600) -> Tuple[int, List[int]]:
         """
         Build a timeline of hourly timestamps.
@@ -5828,7 +6426,7 @@ class PostgresReportGenerator:
                 for qid, value in _summed(f"sum by (queryid) (increase({metric}{f_q}[1h]))").items():
                     if qid in per_query:
                         per_query[qid][key] = value
-            texts = self._k003_texts(db_name, queryids)
+            texts = self._k003_texts(db_name, queryids, cluster, node_name)
             for qid, text in texts.items():
                 per_query[qid]["query_text"] = _one_line(text, K003_TEXT_CHARS)
                 per_query[qid]["is_monitoring"] = MONITORING_MARKER in text
@@ -5837,19 +6435,24 @@ class PostgresReportGenerator:
                     per_query[qid]["relations"] = relations
         return {"per_query": per_query, "summary": summary}
 
-    def _k003_texts(self, db_name: str, queryids: List[str]) -> Dict[str, str]:
+    def _k003_texts(self, db_name: str, queryids: List[str], cluster: Optional[str] = None,
+                    node_name: Optional[str] = None) -> Dict[str, str]:
         """The statements' texts from the sink: this database first, then any (the sink's dbname can
         differ from Prometheus's datname). Empty when the sink is not reachable."""
-        by_db = getattr(self, "_k003_text_cache", None)
-        if by_db is None:  # one sink read per report, not one per database
+        # One sink read per report and node, not one per database. The texts are this report's node's
+        # (#406): K004-K008 run after K003 has read every node of the unit, so the node is passed in,
+        # never taken from the last read.
+        cached = getattr(self, "_k003_text_cache", None)
+        if cached is not None and cached[0] == (cluster, node_name):
+            by_db = cached[1]
+        else:
             try:
-                cluster, node_name = getattr(self, "_k003_text_scope", (None, None))
                 by_db = self.get_queryid_queries_from_sink(K003_TEXT_FETCH_CHARS, cluster=cluster,
                                                            node_name=node_name) or {}
             except Exception as e:
                 logger.warning(f"K003 statement texts unavailable: {e}")
                 by_db = {}
-            self._k003_text_cache = by_db
+            self._k003_text_cache = ((cluster, node_name), by_db)
         out: Dict[str, str] = {}
         for qid in queryids:
             text = (by_db.get(db_name) or {}).get(qid)
@@ -5878,8 +6481,7 @@ class PostgresReportGenerator:
         if not metric_names:
             raise ValueError("metric_names must contain at least one metric name")
 
-        now = int(time.time())
-        end_s = self._floor_hour(now)
+        end_s = self._run_window_end()
         start_s, timeline = self._build_timeline(end_s, hours, step_s)
 
         filters = [f'cluster="{_esc(cluster)}"', f'node_name="{_esc(node_name)}"', f'datname="{_esc(db_name)}"']
@@ -6266,8 +6868,17 @@ class PostgresReportGenerator:
         """
         print("Generating G001 from A003 data...")
 
-        # Filter A003 settings for G001-relevant settings
-        memory_data = self.filter_a003_settings(a003_report, self.G001_SETTINGS)
+        # This node's settings when A003 has the node (filter_a003_settings merges every node, so
+        # each node would carry the last node's values); else every node's, as before.
+        results = a003_report.get('results', {}) or {}
+        own_node = node_name in results
+        if own_node:
+            node_settings = (results[node_name] or {}).get('data', {}) or {}
+        else:  # never this node's own values: no settings_scope below
+            node_settings = {}
+            for node_data in results.values():
+                node_settings.update((node_data or {}).get('data', {}) or {})
+        memory_data = self._g001_settings(node_settings)
 
         # Calculate memory analysis
         memory_analysis = self._analyze_memory_settings(memory_data)
@@ -6275,6 +6886,8 @@ class PostgresReportGenerator:
         # Extract postgres version from A003
         postgres_version = self.extract_postgres_version_from_a003(a003_report, node_name)
         data = {"settings": memory_data, "analysis": memory_analysis}
+        if own_node and self._g001_scope_holds(node_settings):
+            data["settings_scope"] = self._g001_settings_scope()
         activity = self._g001_activity(cluster, node_name) if cluster is not None else {}
         if activity:
             data["activity"] = activity
@@ -6550,6 +7163,9 @@ class PostgresReportGenerator:
             Dictionary containing all reports
         """
         reports = {}
+        # One window per cluster: fixed at its first use, here (postgresai#534).
+        self._window_end_s = None
+        self._chart_cache = {}
 
         # Determine which nodes to process
         if combine_nodes and node_name is None:
@@ -6653,6 +7269,10 @@ class PostgresReportGenerator:
                 'A005', a005_results, all_nodes["primary"] if all_nodes["primary"] else nodes_to_process[0], all_nodes)
         except Exception as err:
             logger.warning(f"A005 not generated: {a005_facts.error_text(err)}")
+        # A combined report is built again from its nodes: it gets the scrape targets once more.
+        for check_id in CHART_DATA_CHECKS:
+            if check_id in reports:
+                self._attach_scrape_targets(reports[check_id], cluster)
 
         # D001 reads the nodes and monitoring beside A003; its failure never costs
         # the other reports or the upload.
@@ -6929,9 +7549,8 @@ class PostgresReportGenerator:
         ]
         filter_str = '{' + ','.join(filters) + '}'
 
-        # Time range - calculate exact 24h window
-        now = int(time.time())
-        end_s = self._floor_hour(now)
+        # Time range - calculate exact 24h window (the run's window: the same hours as the K reports)
+        end_s = self._run_window_end()
         start_s = end_s - (hours * 3600)  # Exact hours back from end
 
         # Fetch each metric

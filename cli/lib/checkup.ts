@@ -85,7 +85,7 @@ import { generateCheckSummary, CheckSummary } from "./checkup-summary";
  * cross-language test (cli/test/contract-version.test.ts) asserts the two
  * sources cannot drift.
  */
-export const CONTRACT_VERSION = "1.1.0";
+export const CONTRACT_VERSION = "1.3.0";
 
 // Time constants
 const SECONDS_PER_DAY = 86400;
@@ -1510,7 +1510,9 @@ export function judgeKeepingUp(
   workers: AutovacuumWorkerSnapshot,
   blocked: BlockedAutovacuumWorker[],
   progress: VacuumProgressEntry[],
-  starvingTablesCount: number
+  starvingTablesCount: number,
+  /** Queued tables with autovacuum disabled, as far as the listed (top-K) tables show. */
+  queuedAutovacuumDisabled: number = 0
 ): AutovacuumKeepup {
   const antiWraparoundPresent =
     workers.anti_wraparound_workers > 0 || progress.some((p) => p.is_anti_wraparound);
@@ -1546,8 +1548,17 @@ export function judgeKeepingUp(
       `Autovacuum queue (${aggregates.queue_length}) is more than ${F003_QUEUE_SATURATION_MULTIPLIER}x the worker pool (${workerText}): chronic under-provisioning.`
     );
   } else if (aggregates.queue_length > 0) {
+    // "Being worked" only when a worker is busy and no queued table has autovacuum
+    // disabled; "no worker" only when the worker snapshot was read (#529).
+    const queueState = queuedAutovacuumDisabled > 0
+      ? `; ${queuedAutovacuumDisabled} of them with autovacuum disabled (autovacuum does not process them)`
+      : workers.active_workers > 0
+      ? " (queue is being worked)"
+      : workers.max_workers !== null
+      ? "; no autovacuum worker is processing it right now"
+      : "";
     judgmentParts.push(
-      `${aggregates.queue_length} table(s) past their vacuum trigger; ${workerText} (queue is being worked).`
+      `${aggregates.queue_length} table(s) past their vacuum trigger; ${workerText}${queueState}.`
     );
   } else {
     judgmentParts.push(`Autovacuum is keeping up: no tables past their vacuum trigger; ${workerText}.`);
@@ -1658,7 +1669,7 @@ export function buildKeepupConclusions(
     );
   }
 
-  // Insert-trigger findings (append-only tables). PG13+ only: over_insert_trigger
+  // Insert-trigger findings. PG13+ only: over_insert_trigger
   // is always false on PG12 (the insert-trigger settings do not exist there).
   const overInsert = tables
     .filter((t) => t.over_insert_trigger && overGate(t))
@@ -1666,7 +1677,8 @@ export function buildKeepupConclusions(
     .slice(0, 3);
   for (const t of overInsert) {
     conclusions.push(
-      `Append-only table ${rel(t)} is past its autovacuum insert trigger ` +
+      // Not "append-only": the table can also have updates and deletes (#529).
+      `Table ${rel(t)} is past its autovacuum insert trigger ` +
       `(${fmt(t.n_ins_since_vacuum || 0)} inserts since last vacuum > ~${fmt(Math.round(t.insert_trigger_point || 0))}); ` +
       `insert-driven vacuums keep the visibility and freeze maps current (index-only scans, cheaper freezing).`
     );
@@ -3929,7 +3941,10 @@ async function generateF003(client: Client, nodeName: string): Promise<Report> {
   }
   const starvingCount = tables.filter((t) => t.starving).length;
 
-  const keepup = judgeKeepingUp(aggregates, workers, blocked, progress, starvingCount);
+  const queuedAutovacuumDisabled = tables.filter(
+    (t) => t.over_vacuum_trigger && t.autovacuum_disabled && (t.n_live_tup + t.n_dead_tup) >= F003_KEEPUP_MIN_ROWS
+  ).length;
+  const keepup = judgeKeepingUp(aggregates, workers, blocked, progress, starvingCount, queuedAutovacuumDisabled);
 
   const flaggedCount = tables.filter((t) => t.exceeds_dead_tuple_thresholds).length;
   const autovacuumDisabledCount = tables.filter((t) => t.autovacuum_disabled).length;
@@ -5134,6 +5149,13 @@ export const REPORT_GENERATORS: Record<string, (client: Client, nodeName: string
  * For the full dictionary (all available checks), use the checkup-dictionary module.
  * CHECK_INFO is filtered to only include checks that have express-mode generators.
  */
+// Titles for express checks the published dictionary does not list yet (#529).
+// The same titles as each generator's report and reporter/schemas/<id>.schema.json.
+const EXPRESS_CHECK_TITLES: Record<string, string> = {
+  F009: "Xmin horizon and blockers",
+  I001: "I/O statistics (pg_stat_io)",
+};
+
 export const CHECK_INFO: Record<string, string> = (() => {
   // Build the full dictionary map
   const fullMap = buildCheckInfoMap();
@@ -5143,7 +5165,7 @@ export const CHECK_INFO: Record<string, string> = (() => {
   const filtered: Record<string, string> = {};
   for (const checkId of expressCheckIds) {
     // Use dictionary title if available, otherwise use a fallback
-    filtered[checkId] = fullMap[checkId] || checkId;
+    filtered[checkId] = fullMap[checkId] || EXPRESS_CHECK_TITLES[checkId] || checkId;
   }
   return filtered;
 })();

@@ -13,9 +13,9 @@ import { fileURLToPath } from "url";
 import * as crypto from "node:crypto";
 import { Client } from "pg";
 import { startMcpServer } from "../lib/mcp-server";
-import { fetchIssues, fetchIssueComments, createIssueComment, fetchIssue, recordIssueView, cliViewVia, createIssue, updateIssue, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
+import { fetchIssuesPage, issuesPageSummary, DEFAULT_ISSUES_LIMIT, MAX_ISSUES_PER_REQUEST, fetchIssueComments, createIssueComment, fetchIssue, recordIssueView, cliViewVia, createIssue, updateIssue, describeNotifyOutcome, checkNotifyPossible, updateIssueComment, fetchActionItem, fetchActionItems, createActionItem, updateActionItem, presentIssue, type ConfigChange } from "../lib/issues";
 import { fetchReports, fetchAllReports, fetchReportFiles, fetchReportFileData, renderMarkdownForTerminal, parseFlexibleDate, formatReportsForTerminal, type ReportKind } from "../lib/reports";
-import { boxWords, CancelledError, clickhouseKeyHeld, LOOKUP_MS, NOT_CONFIRMED, STILL_CREATING, STILL_IN_PROGRESS, STOPPED_LOOKING, caNote, connect, connectStatus, httpStatus, pickPlace, type DeployOptions, resultLines, stepProgress, stepViewEnd, listedDatabase, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, providerArg, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status, type SupabaseProject, supabaseProjectRows, terminalText, privateLinkOf, privateLinkFailure, overPrivateLink, stackTeardown, verifiedWords } from "../lib/connect";
+import { boxWords, CancelledError, dropMonitoringRole, clickhouseKeyHeld, LOOKUP_MS, NOT_CONFIRMED, STILL_CREATING, STILL_IN_PROGRESS, STOPPED_LOOKING, caNote, connect, connectStatus, httpStatus, pickPlace, type DeployOptions, resultLines, stepProgress, stepViewEnd, listedDatabase, errorText, databaseName, disconnectBilling, disconnecting, detectCloudProvider, parseClickhouseKey, parseUrl, platformDeps, progressText, providerArg, PROVIDERS, stateOf, type ConnectResult, type Database, type Provider, type Status, type SupabaseProject, supabaseProjectRows, terminalText, privateLinkOf, privateLinkFailure, overPrivateLink, stackTeardown, verifiedWords } from "../lib/connect";
 import {
   executeJoeCommand,
   listProjects,
@@ -62,7 +62,7 @@ import { addHostMetrics, removeHostMetrics } from "../lib/clickhouse";
 import { cleanOrphanVolumes, composeDefinesService, composeProjectName, DEFAULT_GRAFANA_PORT, DEFAULT_PGAI_MON_PORT, failedServices, grafanaBindNotice, hostPort, OLD_STACK_KEYSTONE, OLD_STACK_PROFILES, oldStackVolumeNames, parseComposePs, parseProjectPs, PGAI_MON_SERVICE, projectPsArgs, restartLoops, stackProblems, stackSwitchNotice, storeNotice } from "../lib/stack";
 import { PGAI_MON_URL, isNameResolutionError, judgeTargetTestFailure, probePgaiMon } from "../lib/pgai-mon-health";
 import { hostMetricsDir, rdsInstance, renderSupabaseScrapeConfig, writeScrapeFile } from "../lib/host-metrics";
-import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, maskConnectionString, renderInitPlanSql, describeInitScope, type InitPlan, resolveAdminConnection, resolveMonitoringPassword, resolveProvider, validateProvider, verifyInitSetup, legacyHelperWarnings } from "../lib/init";
+import { detectProvider, applyInitPlan, applyUninitPlan, buildInitPlan, buildUninitPlan, checkCurrentUserPermissions, connectWithSslFallback, DEFAULT_MONITORING_USER, formatPermissionCheckMessages, KNOWN_PROVIDERS, maskConnectionString, renderInitPlanSql, describeInitScope, type InitPlan, resolveAdminConnection, resolvePrepareDbPassword, monitoringRoleExists, resolveProvider, validateProvider, verifyInitSetup, legacyHelperWarnings } from "../lib/init";
 import { SupabaseClient, resolveSupabaseConfig, extractProjectRefFromUrl, applyInitPlanViaSupabase, verifyInitSetupViaSupabase, fetchPoolerDatabaseUrl, type PgCompatibleError } from "../lib/supabase";
 import * as pkce from "../lib/pkce";
 import * as authServer from "../lib/auth-server";
@@ -1551,7 +1551,9 @@ program.hook("postAction", () => {
 program.hook("preAction", (_thisCommand, actionCommand) => {
   // Not at a terminal, pgai init only points to pgai mon deploy: no org needed for that.
   const initPointsToConnect = actionCommand.parent === program && actionCommand.name() === "init" && !interactive(actionCommand.opts().json);
-  if (!ORG_SCOPED_COMMANDS.has(actionCommand) || initPointsToConnect) {
+  // checkup --no-upload runs offline: nothing goes to the API, so no org is needed.
+  const offlineCheckup = actionCommand.parent === program && actionCommand.name() === "checkup" && actionCommand.opts().upload === false;
+  if (!ORG_SCOPED_COMMANDS.has(actionCommand) || initPointsToConnect || offlineCheckup) {
     setActiveOrgScope(undefined);
     return;
   }
@@ -1663,8 +1665,10 @@ program
       "  --admin-password <password>   or  PGPASSWORD=... (libpq standard)",
       "",
       "Monitoring password:",
-      "  --password <password>         or  PGAI_MON_PASSWORD=...  (otherwise auto-generated)",
-      "  If auto-generated, it is printed only on TTY by default.",
+      "  --password <password>         or  PGAI_MON_PASSWORD=...  (sets it, also on an existing role)",
+      "  Otherwise an existing role keeps its password and a new role gets a generated one",
+      "  (--reset-password generates a new one for an existing role).",
+      "  A generated password is printed only on a TTY (also with --json).",
       "  To print it in non-interactive mode: --print-password",
       "",
       "SSL connection (sslmode=prefer behavior):",
@@ -1774,6 +1778,39 @@ program
     const { provider, detected } = resolveProvider(opts.provider, conn ?? opts.dbUrl ?? opts.host ?? process.env.PGHOST);
     const note = opts.json ? console.error : console.log;
     if (detected) note("Provider: clickhouse (detected from host)");
+    const keptPasswordNote =
+      `Monitoring role ${opts.monitoringUser} exists: its password is kept as is (if it has none, set one with --reset-password).`;
+    // Set when this run created the role with a generated password, a later step
+    // failed and the role could not be dropped: the error then carries the password (#529).
+    let leftNewRolePassword: string | undefined;
+    // Applies the plan. When this run created the role with a generated password and a
+    // later step fails, nobody has that password: drop the role so a re-run starts clean.
+    const applyDroppingNewRole = async <T>(
+      apply: () => Promise<T>,
+      dbClient: { query: (sql: string) => Promise<unknown> },
+      createdNewRole: boolean,
+      password: string,
+    ): Promise<T> => {
+      try {
+        return await apply();
+      } catch (err) {
+        const failedStep = (err instanceof Error ? err.message : String(err)).match(/Failed at step "([^"]+)":/i)?.[1];
+        // Steps run in plan order with 01.role first: a later failed step means it was applied.
+        if (createdNewRole && failedStep && failedStep !== "01.role") {
+          if (await dropMonitoringRole(dbClient, opts.monitoringUser)) {
+            note(`The new role ${opts.monitoringUser} was dropped again: re-run prepare-db.`);
+          } else {
+            leftNewRolePassword = password;
+            console.error(`⚠ Could not drop the new role ${opts.monitoringUser}: it keeps the generated password.`);
+          }
+        }
+        throw err;
+      }
+    };
+    // Without the 01.role step (a provider that manages users) this run sets no password and creates no role.
+    const hasRoleStep = (plan: InitPlan): boolean => plan.steps.some((s) => s.name === "01.role");
+    const leftPasswordFields = () =>
+      leftNewRolePassword ? { generatedPassword: leftNewRolePassword, passwordChanged: true } : {};
 
     // Validate provider and warn if unknown
     const providerWarning = validateProvider(provider);
@@ -1932,16 +1969,23 @@ program
 
         let monPassword: string;
         let passwordGenerated = false;
+        let keepExistingPassword = false;
         try {
-          const resolved = await resolveMonitoringPassword({
+          const resolved = await resolvePrepareDbPassword({
             passwordFlag: opts.password,
             passwordEnv: process.env.PGAI_MON_PASSWORD,
             monitoringUser: opts.monitoringUser,
+            resetPassword: opts.resetPassword,
+            printSql: shouldPrintSql,
+            roleExists: () => monitoringRoleExists(supabaseClient, opts.monitoringUser),
           });
           monPassword = resolved.password;
           passwordGenerated = resolved.generated;
+          keepExistingPassword = resolved.keepExistingPassword;
+          if (keepExistingPassword && !shouldPrintSql) note(keptPasswordNote);
           if (resolved.generated) {
-            const canPrint = process.stdout.isTTY || !!opts.printPassword || jsonOutput;
+            // Never in non-TTY output (JSON included) unless --print-password (#529).
+            const canPrint = process.stdout.isTTY || !!opts.printPassword;
             if (canPrint) {
               if (!jsonOutput) {
                 const shellSafe = monPassword.replace(/'/g, "'\\''");
@@ -1952,6 +1996,12 @@ program
                 console.log("Store it securely (or rerun with --password / PGAI_MON_PASSWORD to set your own).");
               }
               // For JSON mode, password will be included in the success output below
+            } else if (jsonOutput) {
+              outputError({
+                message: `Monitoring password was auto-generated for ${opts.monitoringUser} but not printed in non-interactive mode. ` +
+                  "Provide it with --password or PGAI_MON_PASSWORD, or (NOT recommended) pass --print-password.",
+              });
+              return;
             } else {
               console.error(
                 [
@@ -1974,6 +2024,8 @@ program
           return;
         }
 
+        // A generated password for a role this run creates (not a reset of an existing one).
+        const createsNewRole = passwordGenerated && !opts.resetPassword;
         const scramSetting = await supabaseClient.query("select current_setting('scram_iterations', true) as iterations");
         const plan = await buildInitPlan({
           database,
@@ -1981,6 +2033,8 @@ program
           monitoringPassword: monPassword,
           iterations: Number(scramSetting.rows[0]?.iterations),
           includeOptionalPermissions,
+          keepExistingPassword,
+          roleExpectation: keepExistingPassword ? "exists" : createsNewRole ? "new" : undefined,
         });
 
         // For Supabase mode, skip RDS and self-managed steps (they don't apply)
@@ -2000,10 +2054,10 @@ program
           return;
         }
 
-        const { applied, skippedOptional } = await applyInitPlanViaSupabase({
-          client: supabaseClient,
-          plan: effectivePlan,
-        });
+        const { applied, skippedOptional } = await applyDroppingNewRole(
+          () => applyInitPlanViaSupabase({ client: supabaseClient, plan: effectivePlan }),
+          supabaseClient, createsNewRole && hasRoleStep(effectivePlan), monPassword,
+        );
         const legacyWarnings = await legacyHelperWarnings(supabaseClient);
 
         if (jsonOutput) {
@@ -2022,7 +2076,9 @@ program
               ...legacyWarnings,
             ],
           };
-          if (passwordGenerated) {
+          result.passwordChanged = !keepExistingPassword && hasRoleStep(effectivePlan);
+          // No role step (provider manages users): the password was never set.
+          if (passwordGenerated && hasRoleStep(effectivePlan)) {
             result.generatedPassword = monPassword;
           }
           if (databaseUrl) {
@@ -2081,6 +2137,7 @@ program
             success: false,
             mode: "supabase",
             error: errorObj,
+            ...leftPasswordFields(),
           });
           process.exitCode = 1;
         } else {
@@ -2245,16 +2302,24 @@ program
 
       let monPassword: string;
       let passwordGenerated = false;
+      let keepExistingPassword = false;
       try {
-        const resolved = await resolveMonitoringPassword({
+        const adminClient = client;
+        const resolved = await resolvePrepareDbPassword({
           passwordFlag: opts.password,
           passwordEnv: process.env.PGAI_MON_PASSWORD,
           monitoringUser: opts.monitoringUser,
+          resetPassword: opts.resetPassword,
+          printSql: shouldPrintSql,
+          roleExists: () => monitoringRoleExists(adminClient, opts.monitoringUser),
         });
         monPassword = resolved.password;
         passwordGenerated = resolved.generated;
+        keepExistingPassword = resolved.keepExistingPassword;
+        if (keepExistingPassword && !shouldPrintSql) note(keptPasswordNote);
         if (resolved.generated) {
-          const canPrint = process.stdout.isTTY || !!opts.printPassword || jsonOutput;
+          // Never in non-TTY output (JSON included) unless --print-password (#529).
+          const canPrint = process.stdout.isTTY || !!opts.printPassword;
           if (canPrint) {
             if (!jsonOutput) {
               // Print secrets to stderr to reduce the chance they end up in piped stdout logs.
@@ -2267,6 +2332,12 @@ program
               console.log("Store it securely (or rerun with --password / PGAI_MON_PASSWORD to set your own).");
             }
             // For JSON mode, password will be included in the success output below
+          } else if (jsonOutput) {
+            outputError({
+              message: `Monitoring password was auto-generated for ${opts.monitoringUser} but not printed in non-interactive mode. ` +
+                "Provide it with --password or PGAI_MON_PASSWORD, or (NOT recommended) pass --print-password.",
+            });
+            return;
           } else {
             console.error(
               [
@@ -2289,6 +2360,8 @@ program
         return;
       }
 
+      // A generated password for a role this run creates (not a reset of an existing one).
+      const createsNewRole = passwordGenerated && !opts.resetPassword;
       const scramSetting = await client.query("select current_setting('scram_iterations', true) as iterations");
       const plan = await buildInitPlan({
         database,
@@ -2297,6 +2370,8 @@ program
         iterations: Number(scramSetting.rows[0]?.iterations),
         includeOptionalPermissions,
         provider,
+        keepExistingPassword,
+        roleExpectation: keepExistingPassword ? "exists" : createsNewRole ? "new" : undefined,
       });
 
       // For reset-password, we only want the role step. But if provider skips role creation,
@@ -2320,7 +2395,11 @@ program
         return;
       }
 
-      const { applied, skippedOptional } = await applyInitPlan({ client, plan: effectivePlan });
+      const planClient = client;
+      const { applied, skippedOptional } = await applyDroppingNewRole(
+        () => applyInitPlan({ client: planClient, plan: effectivePlan }),
+        planClient, createsNewRole && hasRoleStep(effectivePlan), monPassword,
+      );
       const legacyWarnings = await legacyHelperWarnings(client);
 
       if (jsonOutput) {
@@ -2339,7 +2418,9 @@ program
             ...legacyWarnings,
           ],
         };
-        if (passwordGenerated) {
+        result.passwordChanged = !keepExistingPassword && hasRoleStep(effectivePlan);
+        // No role step (provider manages users): the password was never set.
+        if (passwordGenerated && hasRoleStep(effectivePlan)) {
           result.generatedPassword = monPassword;
         }
         outputJson(result);
@@ -2401,6 +2482,7 @@ program
           mode: "direct",
           error: errorObj,
           ...(legacyWarnings.length > 0 ? { warnings: legacyWarnings } : {}),
+          ...leftPasswordFields(),
         });
         process.exitCode = 1;
       } else {
@@ -2794,6 +2876,15 @@ withOrgOptions(program.command("checkup [checkIdOrConn] [conn]"))
       "  postgresai checkup postgresql://user:pass@host:5432/db --check-id H002",
       "  postgresai checkup postgresql://user:pass@host:5432/db --output ./reports",
       "  postgresai checkup postgresql://user:pass@host:5432/db --no-upload --json",
+      "",
+      "Exit codes:",
+      "  0  all checks completed (findings do not change the exit code)",
+      "  1  error: bad arguments, connection, permissions or upload failed, or",
+      "     some checks failed (partial results).",
+      "  With --json, when the output directory, API key, connection, permissions,",
+      "  check ID or upload fails before any report, stdout gets",
+      "  {\"success\": false, \"error\": {...}}. Argument and organization errors",
+      "  print to stderr only.",
     ].join("\n")
   )
   .action(async (checkIdOrConn: string | undefined, connArg: string | undefined, opts: CheckupOptions, cmd: Command) => {
@@ -2842,6 +2933,17 @@ withOrgOptions(program.command("checkup [checkIdOrConn] [conn]"))
     }
 
     const shouldPrintJson = !!opts.json;
+    // With --json, a failed run still prints one JSON object on stdout:
+    // this error object, unless the reports are already there.
+    let reportsOnStdout = false;
+    const jsonFailure = async (message: string): Promise<void> => {
+      if (!shouldPrintJson || reportsOnStdout) return;
+      try {
+        await writeStdout(JSON.stringify({ success: false, error: { message } }, null, 2) + "\n");
+      } catch (err) {
+        if (!isEpipe(err)) throw err;
+      }
+    };
     const uploadExplicitlyRequested = opts.upload === true;
     const uploadExplicitlyDisabled = opts.upload === false;
     let shouldUpload = !uploadExplicitlyDisabled;
@@ -2849,6 +2951,7 @@ withOrgOptions(program.command("checkup [checkIdOrConn] [conn]"))
     // Preflight: validate/create output directory BEFORE connecting / running checks.
     const outputPath = prepareOutputDirectory(opts.output);
     if (outputPath === null) {
+      await jsonFailure(`Failed to create output directory: ${opts.output}`);
       process.exitCode = 1;
       return;
     }
@@ -2857,6 +2960,7 @@ withOrgOptions(program.command("checkup [checkIdOrConn] [conn]"))
     const rootOpts = program.opts() as CliOptions;
     const uploadResult = prepareUploadConfig(opts, rootOpts, shouldUpload, uploadExplicitlyRequested);
     if (uploadResult === null) {
+      await jsonFailure("API key is required for upload");
       process.exitCode = 1;
       return;
     }
@@ -2881,6 +2985,7 @@ withOrgOptions(program.command("checkup [checkIdOrConn] [conn]"))
         console.error(`Error: the configured API key was rejected by the PostgresAI API (HTTP ${verification.statusCode})`);
         console.error("Tip: run 'postgresai auth login' to re-authenticate, or pass a valid --api-key / set PGAI_API_KEY");
         console.error("Tip: pass --no-upload to run checks locally without uploading");
+        await jsonFailure(`the configured API key was rejected by the PostgresAI API (HTTP ${verification.statusCode})`);
         process.exitCode = 1;
         return;
       }
@@ -2926,6 +3031,7 @@ withOrgOptions(program.command("checkup [checkIdOrConn] [conn]"))
           for (const e of permMessages.errors) {
             console.error(e);
           }
+          await jsonFailure(permMessages.errors.join("\n") || "insufficient database permissions");
           process.exitCode = 1;
           return;
         }
@@ -2968,9 +3074,11 @@ withOrgOptions(program.command("checkup [checkIdOrConn] [conn]"))
           if (dictEntry) {
             console.error(`Check ${checkId} (${dictEntry.title}) is not yet available in express mode.`);
             console.error(`Express-mode checks: ${Object.keys(CHECK_INFO).join(", ")}`);
+            await jsonFailure(`Check ${checkId} (${dictEntry.title}) is not yet available in express mode`);
           } else {
             console.error(`Unknown check ID: ${checkId}`);
             console.error(`See 'postgresai checkup --help' for available checks.`);
+            await jsonFailure(`Unknown check ID: ${checkId}`);
           }
           process.exitCode = 1;
           return;
@@ -3004,6 +3112,7 @@ withOrgOptions(program.command("checkup [checkIdOrConn] [conn]"))
       if (shouldPrintJson && !outputPath) {
         // Await the flush: a natural exit can drop a queued stdout tail (#355).
         try {
+          reportsOnStdout = true;
           await writeStdout(JSON.stringify(reports, null, 2) + "\n");
         } catch (err) {
           // The reader closed early (`| head`): not an error for a CLI.
@@ -3063,12 +3172,15 @@ withOrgOptions(program.command("checkup [checkIdOrConn] [conn]"))
       }
     } catch (error) {
       if (error instanceof RpcError) {
-        for (const line of formatRpcErrorForDisplay(error)) {
+        const lines = formatRpcErrorForDisplay(error);
+        for (const line of lines) {
           console.error(line);
         }
+        await jsonFailure(lines.join("\n"));
       } else {
         const message = error instanceof Error ? error.message : String(error);
         console.error(`Error: ${message}`);
+        await jsonFailure(message);
       }
       process.exitCode = 1;
     } finally {
@@ -5068,7 +5180,7 @@ const mon = program.command("mon").description("monitoring services management")
 sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (default: host[:port]/database)",
   "the box's region on its cloud (default: the database's region when that cloud has it; see below)",
   "where the monitoring box runs: aws or hetzner (default: the database's cloud, else aws)")
-  .description("deploy PostgresAI Cloud monitoring for a database: prepare it, provision the monitoring box, print its Health Matrix and dashboard")
+  .description("deploy PostgresAI Cloud monitoring for a database: prepare it, provision the monitoring box, print its Database health and dashboard")
   .option("--provider <provider>", "generic (direct PostgreSQL URL; alias: self-managed) | clickhouse | rds | supabase (default: detected from the host)")
   .option("--clickhouse-key <id:secret>", "ClickHouse Cloud API key (Basic Service API Reader) for CPU, memory and disk; or CLICKHOUSE_KEY_ID + CLICKHOUSE_KEY_SECRET")
   .option("--self-hosted", "run the monitoring stack on this machine (mon local-install) instead of PostgresAI Cloud")
@@ -5091,7 +5203,7 @@ sharedDeployOptions(withOrgOptions(mon.command("deploy")), 20, "instance name (d
     "",
     "Steps (each skipped when already done; safe to re-run): sign in, prepare the database",
     "(an admin URL creates the postgres_ai_mon role; otherwise the SQL is printed), provision",
-    "the monitoring box, wait, print the Health Matrix (health_url) and Grafana, signed in with",
+    "the monitoring box, wait, print Database health (health_url) and Grafana, signed in with",
     "your PostgresAI account (dashboard_url). The box runs its first checkup at first_checkup_eta",
     "at the earliest (3 minutes after it is ready), once every target has data (at most 30 minutes).",
     "",
@@ -5216,7 +5328,7 @@ async function cloudInstance(opts: { debug?: boolean }, ref: string, live = fals
   return pickInstance(rows, ref, (d) => d.id, (d) => d.name, "pgai mon instances list");
 }
 
-/** The org's monitoring instances with their console links (Health Matrix, Grafana sign-in), and a PrivateLink box's route. */
+/** The org's monitoring instances with their console links (Database health, Grafana sign-in), and a PrivateLink box's route. */
 async function linkedDatabases(opts: { debug?: boolean }) {
   const api = cloudApi(opts.debug);
   return Promise.all((await api.list()).map(async (d) => {
@@ -5345,7 +5457,7 @@ withOrgOptions(monInstances.command("set <id-or-name>"))
         ? `${row.name} already has ${vcpus} vCPUs: nothing changed`
         : r.aas_status === "no_labels"
           ? "AAS (database load) is collected once the monitoring box has registered"
-          : "AAS (database load) is collected from the next minute; the Health Matrix fills in as data arrives";
+          : "AAS (database load) is collected from the next minute; Database health fills in as data arrives";
       const result = { status: monitoringStatus(row.status), name: row.name, id: row.id, vcpus: r.vcpus, previous_vcpus: r.previous_vcpus, changed: r.changed, next };
       if (json) printResult(result, true);
       else console.log(`${row.name}: ${r.vcpus} vCPUs${r.changed ? ` (was ${r.previous_vcpus ?? "not set"})` : ""}. ${next}.`);
@@ -7976,7 +8088,7 @@ const issues = program.command("issues").description("issues management");
 withOrgOptions(issues.command("list"))
   .description("list issues")
   .option("--status <status>", "filter by status: open (default), closed, or all")
-  .option("--limit <n>", "max number of issues to return (default: 20)", parseInt)
+  .option("--limit <n>", `max number of issues to return (default: ${DEFAULT_ISSUES_LIMIT}; the API returns at most ${MAX_ISSUES_PER_REQUEST})`, parseInt)
   .option("--offset <n>", "number of issues to skip (default: 0)", parseInt)
   .option("--hidden-only", "list only hidden issues (PostgresAI staff)")
   .option("--debug", "enable debug output")
@@ -8018,7 +8130,7 @@ withOrgOptions(issues.command("list"))
         return;
       }
 
-      const result = await fetchIssues({
+      const page = await fetchIssuesPage({
         apiKey,
         apiBaseUrl,
         orgId,
@@ -8030,6 +8142,7 @@ withOrgOptions(issues.command("list"))
         debug: !!opts.debug,
       });
       spinner.stop();
+      const result = page.items;
       const trimmed = Array.isArray(result)
         ? (result as any[]).map((r) =>
             // Route through the same helper as `issues view` so the status
@@ -8044,6 +8157,17 @@ withOrgOptions(issues.command("list"))
           )
         : result;
       printResult(trimmed, opts.json);
+      // Where this page sits in the whole list, on every call: stdout stays
+      // the bare array, and an agent reading both streams learns whether it
+      // has everything.
+      const summary = issuesPageSummary({
+        shown: Array.isArray(result) ? result.length : 0,
+        offset: page.offset,
+        total: page.total,
+        status: statusFilter,
+        hiddenOnly: !!opts.hiddenOnly,
+      });
+      if (summary) console.error(summary);
     } catch (err) {
       spinner.stop();
       const message = err instanceof Error ? err.message : String(err);
@@ -8312,9 +8436,13 @@ withOrgOptions(issues.command("update <issueId>"))
   )
   .option("--hidden", "hide the issue (PostgresAI staff)")
   .option("--no-hidden", "unhide the issue (PostgresAI staff)")
+  .option(
+    "--notify",
+    "with --no-hidden: send the new-issue email and Slack post; only the first time the issue becomes visible (PostgresAI staff)"
+  )
   .option("--debug", "enable debug output")
   .option("--json", "output raw JSON")
-  .action(async (issueId: string, opts: { title?: string; description?: string; status?: string; label?: string[]; clearLabels?: boolean; attach?: string[]; hidden?: boolean; debug?: boolean; json?: boolean }) => {
+  .action(async (issueId: string, opts: { title?: string; description?: string; status?: string; label?: string[]; clearLabels?: boolean; attach?: string[]; hidden?: boolean; notify?: boolean; debug?: boolean; json?: boolean }) => {
     const rootOpts = program.opts<CliOptions>();
     const cfg = config.readConfig();
     const { apiKey } = getConfig(rootOpts);
@@ -8325,6 +8453,12 @@ withOrgOptions(issues.command("update <issueId>"))
     }
 
     const { apiBaseUrl, storageBaseUrl } = resolveBaseUrls(rootOpts, cfg);
+
+    if (opts.notify && opts.hidden !== false) {
+      console.error("--notify works only with --no-hidden (it notifies when the issue becomes visible)");
+      process.exitCode = 1;
+      return;
+    }
 
     const title = opts.title !== undefined ? interpretEscapes(String(opts.title)) : undefined;
     let description = opts.description !== undefined ? interpretEscapes(String(opts.description)) : undefined;
@@ -8363,6 +8497,11 @@ withOrgOptions(issues.command("update <issueId>"))
       attachPaths.length > 0 ? "Uploading attachments..." : "Updating issue..."
     );
     try {
+      // A notify the platform would refuse is refused before any upload, so
+      // nothing is left behind.
+      if (opts.notify && attachPaths.length > 0) {
+        await checkNotifyPossible({ apiKey, apiBaseUrl, issueId, debug: !!opts.debug });
+      }
       if (attachPaths.length > 0) {
         // If the caller did not supply a new description, fetch the existing one
         // and append to it. This makes "add a screenshot to issue X" a one-step
@@ -8400,10 +8539,16 @@ withOrgOptions(issues.command("update <issueId>"))
         // Commander leaves this undefined unless --hidden/--no-hidden was given,
         // so an update that does not mention it never touches p_is_hidden.
         hidden: typeof opts.hidden === "boolean" ? opts.hidden : undefined,
+        notify: opts.notify === true,
         debug: !!opts.debug,
       });
       spinner.stop();
       printResult(result, opts.json);
+      // On stderr, so --json and piped stdout stay the raw result (which also
+      // carries `notify`).
+      if (result.notify) {
+        console.error(describeNotifyOutcome(result.notify));
+      }
     } catch (err) {
       spinner.stop();
       const message = err instanceof Error ? err.message : String(err);

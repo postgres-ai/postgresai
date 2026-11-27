@@ -15,6 +15,7 @@ import gzip
 import json
 import math
 import os
+import re
 import time as _time
 from datetime import datetime as _datetime
 from pathlib import Path
@@ -129,6 +130,15 @@ def sink_index_definitions(db_name: Optional[str] = None) -> Dict[str, str]:
 # ----------------------------------------------------------------------------------------------
 # Backends
 # ----------------------------------------------------------------------------------------------
+def mon_form(query: str) -> Tuple[str, Optional[int]]:
+    """A recorded instant query as the reporter sends it to pgai-mon: VictoriaMetrics got
+    `... @ <t>` (one t for the whole query); pgai-mon, which has no `@`, gets the query without it,
+    evaluated at t (PostgresReportGenerator._instant_at). (query, t), t None without `@`."""
+    ats = {int(t) for t in re.findall(r" @ (\d+)", query)}
+    assert len(ats) <= 1, query
+    return re.sub(r" @ \d+", "", query), (ats.pop() if ats else None)
+
+
 def instant_key(query: str) -> str:
     return json.dumps(["instant", query, FIXTURE_AT])
 

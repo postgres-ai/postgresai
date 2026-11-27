@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { connectStatus, grafanaOAuthUrl, healthMatrixUrl, platformDeps, type Database } from "../lib/connect";
+import { connectStatus, grafanaOAuthUrl, databaseHealthUrl, platformDeps, type Database } from "../lib/connect";
 
-// After mon deploy, the first link is the project's Health Matrix in the console;
+// After mon deploy, the first link is the project's Database health in the console;
 // the second is Grafana, through its PostgresAI sign-in (generic OAuth).
 
-describe("healthMatrixUrl", () => {
+describe("databaseHealthUrl", () => {
   test("console origin, org alias and project alias, each path segment encoded", () => {
-    expect(healthMatrixUrl("https://console.example", "acme", "prod")).toBe("https://console.example/acme/projects/prod/health");
-    expect(healthMatrixUrl("https://console.example/", "acme co/x", "my proj#1?")).toBe("https://console.example/acme%20co%2Fx/projects/my%20proj%231%3F/health");
+    expect(databaseHealthUrl("https://console.example", "acme", "prod")).toBe("https://console.example/acme/projects/prod/health-preview");
+    expect(databaseHealthUrl("https://console.example/", "acme co/x", "my proj#1?")).toBe("https://console.example/acme%20co%2Fx/projects/my%20proj%231%3F/health-preview");
   });
 });
 
@@ -32,12 +32,12 @@ describe("grafanaOAuthUrl", () => {
 const ROW: Database = { id: "i-1", name: "db.example.com/app", provider: "self-managed", status: "active", dashboard_url: "https://abc.pgai.watch", host_metrics: false };
 
 describe("connectStatus", () => {
-  test("connected: the Health Matrix is the next step, before Grafana", () => {
-    const r = connectStatus({ ...ROW, health_url: "https://console.example/acme/projects/p/health" });
-    expect(r.next).toBe("Open https://console.example/acme/projects/p/health");
+  test("connected: Database health is the next step, before Grafana", () => {
+    const r = connectStatus({ ...ROW, health_url: "https://console.example/acme/projects/p/health-preview" });
+    expect(r.next).toBe("Open https://console.example/acme/projects/p/health-preview");
     expect(Object.keys(r).indexOf("health_url")).toBeLessThan(Object.keys(r).indexOf("dashboard_url"));
   });
-  test("without a Health Matrix link: Grafana", () => {
+  test("without a Database health link: Grafana", () => {
     expect(connectStatus(ROW).next).toBe("Open https://abc.pgai.watch");
     expect("health_url" in connectStatus(ROW)).toBe(false);
   });
@@ -71,12 +71,12 @@ describe("platformDeps.links", () => {
     { project_id: 2, alias: "other-db", name: "Other DB", monitoring_instance_ids: [] },
   ];
 
-  test("each row gets its Health Matrix link and the Grafana sign-in address, in that order", async () => {
+  test("each row gets its Database health link and the Grafana sign-in address, in that order", async () => {
     await withPlatform({ projects_list: projects, orgs_list: [{ org_id: 7, alias: "acme co", name: "Acme", is_active: true }] }, async (deps) => {
       const [a, b] = await Promise.all(rows.map(deps.links));
-      expect(a).toMatchObject({ health_url: "https://console.example/acme%20co/projects/db-example-com-app/health", dashboard_url: "https://abc.pgai.watch/login/generic_oauth?redirectTo=%2F" });
+      expect(a).toMatchObject({ health_url: "https://console.example/acme%20co/projects/db-example-com-app/health-preview", dashboard_url: "https://abc.pgai.watch/login/generic_oauth?redirectTo=%2F" });
       expect(Object.keys(a!).indexOf("health_url")).toBe(Object.keys(a!).indexOf("dashboard_url") - 1);
-      expect(b).toMatchObject({ health_url: "https://console.example/acme%20co/projects/other-db/health", dashboard_url: null });
+      expect(b).toMatchObject({ health_url: "https://console.example/acme%20co/projects/other-db/health-preview", dashboard_url: null });
     });
   });
 

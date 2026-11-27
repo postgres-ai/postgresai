@@ -13,6 +13,8 @@
     "checkId": { "const": "K006" },
     "checkTitle": { "const": "Top queries by shared blocks read" },
     "timestamptz": { "type": "string" },
+    "scrape_targets": { "type": "array", "items": { "$ref": "#/$defs/scrapeTarget" } },
+    "scrape_targets_error": { "type": "string" },
     "nodes": { "$ref": "#/$defs/nodes" },
     "results": {
       "type": "object",
@@ -49,6 +51,51 @@
       "type": "array",
       "items": { "type": "number" }
     },
+    "exportRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["top_n_per_database", "ranked_by", "min_calls", "min_exec_time_ms", "interval_seconds"],
+      "properties": {
+        "top_n_per_database": { "type": "integer" },
+        "ranked_by": { "type": "string" },
+        "min_calls": { "type": "integer" },
+        "min_exec_time_ms": { "type": "number" },
+        "interval_seconds": { "type": "integer" }
+      }
+    },
+    "counterHours": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end", "total", "hourly"],
+      "properties": {
+        "start": { "type": "string" },
+        "end": { "type": "string" },
+        "total": { "type": "number" },
+        "hourly": { "$ref": "#/$defs/hourlyNumbers" },
+        "peak_per_s": { "type": "number" },
+        "peak_at": { "type": "string" }
+      }
+    },
+    "scrapeTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job", "instance", "up"],
+      "properties": {
+        "job": { "type": "string" },
+        "instance": { "type": "string" },
+        "up": { "type": "integer" }
+      }
+    },
+    "monitoredSetting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["setting", "unit"],
+      "properties": {
+        "setting": { "type": "string" },
+        "unit": { "type": "string" },
+        "changed_in_window": { "type": "boolean" }
+      }
+    },
     "queryEntry": {
       "type": "object",
       "additionalProperties": false,
@@ -56,7 +103,19 @@
       "properties": {
         "queryid": { "type": "string" },
         "total_shared_read_bytes": { "type": "number" },
-        "hourly_shared_read_bytes": { "$ref": "#/$defs/hourlyNumbers" }
+        "hourly_shared_read_bytes": { "$ref": "#/$defs/hourlyNumbers" },
+        "calls": { "type": "number" },
+        "exec_time_ms": { "type": "number" },
+        "blk_read_time_ms": { "type": "number" },
+        "rows": { "type": "number" },
+        "shared_blks_hit_bytes": { "type": "number" },
+        "shared_blks_read_bytes": { "type": "number" },
+        "wal_bytes": { "type": "number" },
+        "temp_bytes_written": { "type": "number" },
+        "hourly_calls": { "type": "array", "items": { "type": ["number", "null"] } },
+        "query_text": { "type": "string" },
+        "is_monitoring": { "type": "boolean" },
+        "relations": { "type": "array", "items": { "type": "string" }, "maxItems": 3 }
       }
     },
     "summary": {
@@ -78,7 +137,30 @@
         "total_shared_read_bytes_other": { "type": "number" },
         "time_range_hours": { "type": "integer" },
         "hourly_timestamps": { "$ref": "#/$defs/timeline" },
-        "limit": { "type": "integer" }
+        "limit": { "type": "integer" },
+        "window_start": { "type": "string" },
+        "window_end": { "type": "string" },
+        "window_seconds": { "type": "integer" },
+        "export_rule": { "$ref": "#/$defs/exportRule" },
+        "total_calls": { "type": "number" },
+        "statements_exported_max": { "type": "integer" },
+        "statements_reset_max": { "type": "integer" },
+        "statements_reset_at": { "type": "string" },
+        "database_blocks": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "read": { "$ref": "#/$defs/counterHours" },
+            "hit": { "$ref": "#/$defs/counterHours" },
+            "read_error": { "type": "string" },
+            "hit_error": { "type": "string" }
+          }
+        },
+        "database_size_bytes": { "type": "number" },
+        "database_size_error": { "type": "string" },
+        "stats_reset": { "type": ["string", "null"] },
+        "stats_reset_error": { "type": "string" },
+        "hourly_calls_error": { "type": "string" }
       }
     },
     "dbEntry": {
@@ -103,10 +185,12 @@
         "available": { "type": "boolean" },
         "reason": { "type": "string" },
         "data": { "$ref": "#/$defs/data" },
-        "postgres_version": { "$ref": "#/$defs/postgresVersion" }
+        "postgres_version": { "$ref": "#/$defs/postgresVersion" },
+        "settings": { "type": "object", "additionalProperties": { "$ref": "#/$defs/monitoredSetting" } },
+        "settings_error": { "type": "string" },
+        "deadlocks": { "type": "object", "additionalProperties": { "$ref": "#/$defs/counterHours" } },
+        "deadlocks_error": { "type": "string" }
       }
     }
   }
 }
-
-

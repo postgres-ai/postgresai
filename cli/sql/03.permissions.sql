@@ -153,22 +153,78 @@ begin
 end {{DO_QUOTE}};
 grant usage on schema postgres_ai to {{ROLE_IDENT}};
 
--- For bloat analysis: expose pg_statistic via a view
+-- For bloat analysis: column statistics (#525). pg_statistic when the owner
+-- may read it (superuser, Supabase); else pg_stats, for the tables the owner
+-- can read: current RDS minors deny pg_statistic to rds_superuser, also
+-- through its views. Decided per call, so a provider upgrade cannot break it.
+create or replace function postgres_ai.pg_statistic_rows()
+returns table (schemaname name, tablename name, attname name,
+               null_frac real, avg_width integer, inherited boolean)
+language plpgsql stable security definer
+set search_path = pg_catalog, pg_temp
+as $$
+#variable_conflict use_column
+begin
+  return query
+    select n.nspname, c.relname, a.attname, s.stanullfrac, s.stawidth, false
+    from pg_catalog.pg_statistic s
+    join pg_catalog.pg_class c on c.oid = s.starelid
+    join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+    join pg_catalog.pg_attribute a on a.attrelid = s.starelid and a.attnum = s.staattnum
+    where a.attnum > 0 and not a.attisdropped;
+exception when insufficient_privilege then
+  return query
+    select st.schemaname, st.tablename, st.attname, st.null_frac, st.avg_width, false
+    from pg_catalog.pg_stats st
+    where not st.inherited;
+end
+$$;
+revoke all on function postgres_ai.pg_statistic_rows() from public;
+-- Default privileges can grant EXECUTE on a new function to any role (#526).
+-- Revoke every grant but the owner's; the grants below are the only ones.
+do {{DO_QUOTE}}
+declare
+  grantee_oid oid;
+begin
+  for grantee_oid in
+    select distinct a.grantee
+    from pg_catalog.pg_proc p
+    cross join lateral pg_catalog.aclexplode(p.proacl) a
+    where p.oid = pg_catalog.to_regprocedure('postgres_ai.pg_statistic_rows()')
+      and a.grantee <> 0 and a.grantee <> p.proowner
+  loop
+    execute pg_catalog.format('revoke all on function postgres_ai.pg_statistic_rows() from %I cascade',
+      pg_catalog.pg_get_userbyid(grantee_oid));
+  end loop;
+end {{DO_QUOTE}};
+grant execute on function postgres_ai.pg_statistic_rows() to {{ROLE_IDENT}};
+
 create or replace view postgres_ai.pg_statistic as
-select
-    n.nspname as schemaname,
-    c.relname as tablename,
-    a.attname,
-    s.stanullfrac as null_frac,
-    s.stawidth as avg_width,
-    false as inherited
-from pg_catalog.pg_statistic s
-join pg_catalog.pg_class c on c.oid = s.starelid
-join pg_catalog.pg_namespace n on n.oid = c.relnamespace
-join pg_catalog.pg_attribute a on a.attrelid = s.starelid and a.attnum = s.staattnum
-where a.attnum > 0 and not a.attisdropped;
+select schemaname, tablename, attname, null_frac, avg_width, inherited
+from postgres_ai.pg_statistic_rows();
 
 grant select on postgres_ai.pg_statistic to {{ROLE_IDENT}};
+
+-- Roles that a previous prepare-db gave SELECT on the old view (another
+-- monitoring role) need EXECUTE now that the view reads the function. Every
+-- prepare-db granted pg_monitor with it; other SELECT holders, such as roles
+-- that default privileges gave SELECT on new tables, get no EXECUTE (#526).
+do {{DO_QUOTE}}
+declare
+  grantee_oid oid;
+begin
+  for grantee_oid in
+    select a.grantee
+    from pg_catalog.pg_class c
+    cross join lateral pg_catalog.aclexplode(c.relacl) a
+    where c.oid = pg_catalog.to_regclass('postgres_ai.pg_statistic')
+      and a.privilege_type = 'SELECT' and a.grantee <> 0 and a.grantee <> c.relowner
+      and pg_catalog.pg_has_role(a.grantee, 'pg_monitor', 'MEMBER')
+  loop
+    execute pg_catalog.format('grant execute on function postgres_ai.pg_statistic_rows() to %I',
+      pg_catalog.pg_get_userbyid(grantee_oid));
+  end loop;
+end {{DO_QUOTE}};
 
 -- Hardened clusters sometimes revoke PUBLIC on schema public
 grant usage on schema public to {{ROLE_IDENT}};

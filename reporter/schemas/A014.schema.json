@@ -604,13 +604,17 @@
         "data"
       ],
       "properties": {
-        "available": { "type": "boolean" },
-        "reason": { "type": "string" },
         "data": {
           "$ref": "#/$defs/data"
         },
         "postgres_version": {
           "$ref": "#/$defs/postgresVersion"
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
         }
       }
     }

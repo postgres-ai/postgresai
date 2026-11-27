@@ -17,6 +17,8 @@ from reporter.mon_client import MonClient
 def topology(monkeypatch, generator):
     def configure(roles, ids):
         def query(q):
+            if q.startswith('up @ '):  # the scrape targets of A005 and K006-K008 (#534): none here
+                return {'status': 'success', 'data': {'result': []}}
             if 'pgwatch_settings_configured' in q:
                 rows = [{'metric': {'node_name': n}} for n in reversed(roles)]
             else:
@@ -117,8 +119,15 @@ def test_single_primary_reports_are_byte_identical(topology, monkeypatch):
     unit, = gen.get_reporting_units('default')
     assert unit == {'cluster': 'default', 'nodes': {'primary': 'p', 'standbys': ['s', 'unknown']}}
     reports = gen.generate_all_reports('default', reporting_nodes=unit['nodes'])
-    # Recorded from the pre-split implementation with the same clock, metadata, and facts.
-    assert hashlib.sha256(json.dumps(reports, indent=2).encode()).hexdigest() == '7d00f52dfb420c904b4be989cab8edd3f88cda5a9fb7ed7987e7de182494ec3e'
+    # main's #534 adds the scrape targets to these reports after they are built, for split and
+    # single units alike; without them, the reports are the pre-split ones.
+    for check_id in postgres_reports.CHART_DATA_CHECKS:
+        assert reports[check_id].pop('scrape_targets_error') == 'monitoring has no scrape targets'
+    # Recorded from the pre-split implementation with the same clock, metadata, and facts, which
+    # carried contract 1.1.0; the merge with main moved the contract to 1.3.0 (main's numbering).
+    assert {r['contract_version'] for r in reports.values()} == {postgres_reports.CONTRACT_VERSION} == {'1.3.0'}
+    text = json.dumps(reports, indent=2).replace('"contract_version": "1.3.0"', '"contract_version": "1.1.0"')
+    assert hashlib.sha256(text.encode()).hexdigest() == '7d00f52dfb420c904b4be989cab8edd3f88cda5a9fb7ed7987e7de182494ec3e'
 
 
 @pytest.mark.parametrize('extra_clusters', [(), ('default%2Fp1',), ('default%2Fp1', 'default%2Fp1_2')])

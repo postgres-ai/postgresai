@@ -1,5 +1,5 @@
 import { describe, test, expect, mock, beforeEach, afterEach } from "bun:test";
-import { createIssue, updateIssue, updateIssueComment, fetchIssues, fetchIssue, recordIssueView, cliViewVia, withVisibleHiddenFlag, issueRequestHeaders, presentIssue, issueStatusLabel, type SeenByEntry } from "../lib/issues";
+import { describeNotifyOutcome, createIssue, updateIssue, updateIssueComment, fetchIssues, fetchIssuesPage, parseContentRangeTotal, issuesPageSummary, fetchIssue, recordIssueView, cliViewVia, withVisibleHiddenFlag, issueRequestHeaders, presentIssue, issueStatusLabel, type SeenByEntry } from "../lib/issues";
 
 // Mock fetch globally
 const originalFetch = globalThis.fetch;
@@ -223,6 +223,90 @@ describe("updateIssue", () => {
     expect(bodies[1]).toEqual({ p_id: "test-id", p_is_hidden: false });
     // An update that does not mention it must not touch the flag.
     expect("p_is_hidden" in bodies[2]).toBe(false);
+  });
+
+  describe("notify on unhide (platform-all #837)", () => {
+    const base = { apiKey: "test-key", apiBaseUrl: "https://api.example.com", issueId: "test-id" };
+
+    /** Serves GET /issues with `row` (or an error) and records every request. */
+    function mockApi(row: Record<string, unknown> | null, getError?: { status: number; body: string }) {
+      const calls: Array<{ method: string; url: string; body: Record<string, unknown> | null }> = [];
+      globalThis.fetch = mock((url: string, options: RequestInit) => {
+        const method = options?.method ?? "GET";
+        calls.push({ method, url, body: options?.body ? JSON.parse(options.body as string) : null });
+        if (method === "GET") {
+          if (getError) return Promise.resolve(new Response(getError.body, { status: getError.status }));
+          return Promise.resolve(new Response(JSON.stringify(row ? [row] : []), { status: 200 }));
+        }
+        return Promise.resolve(new Response(JSON.stringify({ id: "test-id" }), { status: 200 }));
+      }) as unknown as typeof fetch;
+      return calls;
+    }
+
+    test("a never-visible hidden issue: sends p_notify and says it was requested", async () => {
+      const calls = mockApi({ id: "test-id", is_hidden: true, first_visible_at: null });
+      const result = await updateIssue({ ...base, hidden: false, notify: true });
+      expect(calls[0].method).toBe("GET");
+      expect(calls[0].url).toContain("select=id%2Cis_hidden%2Cfirst_visible_at");
+      expect(calls[1].body).toEqual({ p_id: "test-id", p_is_hidden: false, p_notify: true });
+      expect(result.notify).toEqual({ requested: true, reason: "first_publish" });
+    });
+
+    test("an issue visible before: unhides without p_notify and says why", async () => {
+      const calls = mockApi({ id: "test-id", is_hidden: true, first_visible_at: "2026-11-01T10:00:00+00:00" });
+      const result = await updateIssue({ ...base, hidden: false, notify: true });
+      expect(calls[1].body).toEqual({ p_id: "test-id", p_is_hidden: false });
+      expect(result.notify).toEqual({ requested: false, reason: "visible_before", first_visible_at: "2026-11-01T10:00:00+00:00" });
+      expect(describeNotifyOutcome(result.notify!)).toContain("visible before (2026-11-01T10:00:00+00:00)");
+    });
+
+    test("an issue already visible: nothing to publish, nothing requested", async () => {
+      const calls = mockApi({ id: "test-id", is_hidden: false, first_visible_at: "2026-11-01T10:00:00+00:00" });
+      const result = await updateIssue({ ...base, hidden: false, notify: true });
+      expect("p_notify" in (calls[1].body ?? {})).toBe(false);
+      expect(result.notify).toEqual({ requested: false, reason: "already_visible" });
+    });
+
+    test("a platform without first_visible_at: refused before any update", async () => {
+      const calls = mockApi(null, {
+        status: 400,
+        body: JSON.stringify({ code: "42703", message: "column issues.first_visible_at does not exist" }),
+      });
+      await expect(updateIssue({ ...base, hidden: false, notify: true })).rejects.toThrow("does not support notify on unhide");
+      expect(calls.filter((c) => c.method === "POST")).toHaveLength(0);
+    });
+
+    test("an issue the caller cannot see: not found, no update", async () => {
+      const calls = mockApi(null);
+      await expect(updateIssue({ ...base, hidden: false, notify: true })).rejects.toThrow("Issue not found: test-id");
+      expect(calls.filter((c) => c.method === "POST")).toHaveLength(0);
+    });
+
+    test("notify without unhiding is refused before any request", async () => {
+      const calls = mockApi({ id: "test-id", is_hidden: true, first_visible_at: null });
+      await expect(updateIssue({ ...base, title: "T", notify: true })).rejects.toThrow("only together with unhiding");
+      await expect(updateIssue({ ...base, hidden: true, notify: true })).rejects.toThrow("only together with unhiding");
+      expect(calls).toHaveLength(0);
+    });
+
+    test("each outcome reads exactly as the README quotes it", () => {
+      expect(describeNotifyOutcome({ requested: true, reason: "first_publish" })).toBe(
+        "Notifications requested: the new-issue email and Slack post go out now."
+      );
+      expect(describeNotifyOutcome({ requested: false, reason: "visible_before", first_visible_at: "2026-11-01T10:00:00+00:00" })).toBe(
+        "Nothing sent: this issue was visible before (2026-11-01T10:00:00+00:00); the email and Slack post go out only the first time."
+      );
+      expect(describeNotifyOutcome({ requested: false, reason: "already_visible" })).toBe(
+        "Nothing sent: the issue is already visible."
+      );
+    });
+
+    test("without notify an unhide reads nothing first and reports nothing", async () => {
+      const calls = mockApi({ id: "test-id", is_hidden: true, first_visible_at: null });
+      const result = await updateIssue({ ...base, hidden: false });
+      expect(calls.map((c) => c.method)).toEqual(["POST"]);
+      expect("notify" in result).toBe(false);
+    });
   });
 
   test("accepts update with only title", async () => {
@@ -807,5 +891,92 @@ describe("cliViewVia (platform-all #1085)", () => {
     expect(cliViewVia({ PGAI_VIA: " Agent " })).toBe("agent");
     expect(cliViewVia({ PGAI_VIA: "cli", CLAUDECODE: "1" })).toBe("cli");
     expect(cliViewVia({ PGAI_VIA: "bogus", GEMINI_CLI: "1" })).toBe("agent");
+  });
+});
+
+describe("issues list paging: total and page summary", () => {
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const respond = (body: unknown, status: number, contentRange?: string) => {
+    let captured: { url: string; headers: Record<string, string> } = { url: "", headers: {} };
+    globalThis.fetch = mock((url: string, options: RequestInit) => {
+      captured = { url, headers: options.headers as Record<string, string> };
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (contentRange) headers["Content-Range"] = contentRange;
+      return Promise.resolve(new Response(JSON.stringify(body), { status, headers }));
+    }) as unknown as typeof fetch;
+    return () => captured;
+  };
+
+  test("parseContentRangeTotal reads the total and nothing else", () => {
+    expect(parseContentRangeTotal("0-19/43")).toBe(43);
+    expect(parseContentRangeTotal("*/43")).toBe(43);
+    expect(parseContentRangeTotal("*/0")).toBe(0);
+    expect(parseContentRangeTotal("0-19/*")).toBeNull();
+    expect(parseContentRangeTotal("garbage")).toBeNull();
+    expect(parseContentRangeTotal(null)).toBeNull();
+  });
+
+  test("fetchIssuesPage asks for 50 rows and the count in one Prefer header", async () => {
+    const captured = respond([{ id: "a" }], 200, "0-0/43");
+    const page = await fetchIssuesPage({ apiKey: "k", apiBaseUrl: "https://api.example.com" });
+    expect(new URL(captured().url).searchParams.get("limit")).toBe("50");
+    expect(captured().headers.Prefer).toBe("return=representation, count=exact");
+    // The hidden-issue opt-in is untouched.
+    expect(captured().headers["x-pgai-include-hidden"]).toBe("true");
+    expect(page).toEqual({ items: [{ id: "a" }] as any, offset: 0, total: 43 });
+  });
+
+  test("fetchIssuesPage turns a 416 for an offset past the end into an empty page", async () => {
+    respond({ code: "PGRST103", message: "Requested range not satisfiable" }, 416, "*/43");
+    const page = await fetchIssuesPage({ apiKey: "k", apiBaseUrl: "https://api.example.com", offset: 60 });
+    expect(page).toEqual({ items: [], offset: 60, total: 43 });
+  });
+
+  test("fetchIssuesPage keeps a 416 that is not about the offset an error", async () => {
+    respond({ message: "range" }, 416);
+    await expect(fetchIssuesPage({ apiKey: "k", apiBaseUrl: "https://api.example.com" })).rejects.toThrow(/Failed to fetch issues/);
+    respond({ message: "range" }, 416, "*/43");
+    await expect(fetchIssuesPage({ apiKey: "k", apiBaseUrl: "https://api.example.com", offset: 10 })).rejects.toThrow(/Failed to fetch issues/);
+  });
+
+  test("fetchIssuesPage gives a null total when the server sends none", async () => {
+    respond([], 200);
+    const page = await fetchIssuesPage({ apiKey: "k", apiBaseUrl: "https://api.example.com" });
+    expect(page.total).toBeNull();
+  });
+
+  test("fetchIssues still returns the bare array", async () => {
+    respond([{ id: "a" }], 200, "0-0/1");
+    expect(await fetchIssues({ apiKey: "k", apiBaseUrl: "https://api.example.com" })).toEqual([{ id: "a" }] as any);
+  });
+
+  test("issuesPageSummary", () => {
+    expect(issuesPageSummary({ shown: 43, offset: 0, total: 43, status: "open" })).toBe("Showing 1–43 of 43 open issues.");
+    expect(issuesPageSummary({ shown: 50, offset: 0, total: 120, status: "open" })).toBe(
+      "Showing 1–50 of 120 open issues. Use --offset 50 for the next page, or --limit 120 for all."
+    );
+    expect(issuesPageSummary({ shown: 50, offset: 50, total: 120 })).toBe(
+      "Showing 51–100 of 120 issues. Use --offset 100 for the next page, or --limit 120 for all."
+    );
+    // Over the server's 500 rows per request, --limit cannot fetch them all.
+    expect(issuesPageSummary({ shown: 50, offset: 0, total: 900, status: "closed" })).toBe(
+      "Showing 1–50 of 900 closed issues. Use --offset 50 for the next page."
+    );
+    expect(issuesPageSummary({ shown: 0, offset: 200, total: 120, status: "open" })).toBe(
+      "Showing none of 120 open issues: --offset 200 is past the end."
+    );
+    expect(issuesPageSummary({ shown: 0, offset: 0, total: 0, status: "open" })).toBe("No open issues.");
+    // An empty page that is not past the end (--limit 0) is not blamed on the offset.
+    expect(issuesPageSummary({ shown: 0, offset: 0, total: 43, status: "open" })).toBe("Showing none of 43 open issues.");
+    expect(issuesPageSummary({ shown: 3, offset: 0, total: 3, status: "open", hiddenOnly: true })).toBe(
+      "Showing 1–3 of 3 hidden open issues."
+    );
+    expect(issuesPageSummary({ shown: 20, offset: 0, total: null })).toBeNull();
+    expect(issuesPageSummary({ shown: 50, offset: 0, total: 120 }, (n, v) => `${n}=${v}`)).toBe(
+      "Showing 1–50 of 120 issues. Use offset=50 for the next page, or limit=120 for all."
+    );
   });
 });
