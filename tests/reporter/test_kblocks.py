@@ -212,6 +212,11 @@ def test_a005_gets_the_same_chart_data_beside_its_catalog_facts(monkeypatch) -> 
     validate_report(a005)
     node = a005["results"]["node-1"]
     assert node["deadlocks"] == k006["results"]["node-1"]["deadlocks"]
+    # The hours those counts are for (the end of each, the run's window; platform-all#1306)
+    stamps = node["hourly_timestamps"]
+    assert stamps == gen._run_timeline() and stamps[-1] == gen._run_window_end()
+    assert k006["results"]["node-1"]["hourly_timestamps"] == stamps  # a K node too, data or not
+    assert all(len(window["hourly"]) == len(stamps) for window in node["deadlocks"].values())
     assert a005["scrape_targets"] == k006["scrape_targets"]
     assert "deadlocks" not in node["data"]  # A005's data is the CLI's twin: unchanged
     # Computed once per run: one deadlock range query and one `up` query for all files.
@@ -513,3 +518,38 @@ def test_a_database_with_no_ranked_statement_has_no_hourly_calls_error(monkeypat
     monkeypatch.setattr(gen, "_get_hourly_topk_pgss_data", lambda *a, **k: ({}, [5.0, 5.0, 5.0], TIMELINE))
     s = _report(gen, "K007")["results"]["node-1"]["data"]["app"]
     assert s["top_queries"] == [] and "hourly_calls_error" not in s["summary"]
+
+
+# ── A005 database sizes (platform-all#1306) ───────────────────────────────────────
+
+
+@pytest.mark.unit
+def test_a005_carries_each_databases_size_at_the_window_end(monkeypatch) -> None:
+    fake = FakeMonitoring()
+    gen = _generator(monkeypatch, fake)
+    original = fake.query_instant
+
+    def sizes(query):
+        if query.startswith("last_over_time(pgwatch_db_size_size_b") and 'datname="' not in query:
+            assert query.endswith(f" @ {END}")
+            return _ok([{"metric": {"datname": "app"}, "value": [END, "300"]},
+                        {"metric": {"datname": "app"}, "value": [END, "200"]},  # a renamed source: the largest
+                        {"metric": {"datname": "postgres"}, "value": [END, "100"]}])
+        return original(query)
+
+    monkeypatch.setattr(gen, "query_instant", sizes)
+    a005 = gen.generate_a005_extensions_report("local", "node-1")
+    validate_report(a005)
+    node = a005["results"]["node-1"]
+    assert node["database_sizes"] == {"app": 300.0, "postgres": 100.0}
+    assert "database_sizes" not in node["data"]
+
+
+@pytest.mark.unit
+def test_a005_sizes_that_cannot_be_read_say_why(monkeypatch) -> None:
+    fake = FakeMonitoring()
+    fake.fail = {"pgwatch_db_size_size_b"}
+    a005 = _generator(monkeypatch, fake).generate_a005_extensions_report("local", "node-1")
+    validate_report(a005)
+    node = a005["results"]["node-1"]
+    assert node["database_sizes_error"] == "the monitoring query failed" and "database_sizes" not in node

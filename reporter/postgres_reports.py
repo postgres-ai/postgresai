@@ -38,7 +38,7 @@ __version__ = "1.0.2"
 #
 # MUST stay identical to CONTRACT_VERSION in cli/lib/checkup.ts. A cross-language
 # test (cli/test/contract-version.test.ts) asserts the two sources cannot drift.
-CONTRACT_VERSION = "1.4.0"
+CONTRACT_VERSION = "1.5.0"
 
 import requests
 import json
@@ -967,6 +967,7 @@ class PostgresReportGenerator:
         # The chart data CheckupLoop drew from live queries, from monitoring (postgresai#534): beside
         # `data`, never in it (the CLI's twin writes `data` alone).
         result.update(self._kblocks_node(cluster, node_name, self._run_timeline()))
+        result.update(self._a005_database_sizes(cluster, node_name, self._run_timeline()))
         return self._attach_scrape_targets(self.format_report_data("A005", {node_name: result}, node_name), cluster)
 
     def generate_d001_logging_report(self, a003_report: Dict[str, Any], cluster: str = "local",
@@ -5296,9 +5297,33 @@ class PostgresReportGenerator:
             summary["hourly_calls_error"] = "the monitoring query failed or answered no series"
         return summary
 
+    def _a005_database_sizes(self, cluster: str, node_name: str, timeline: List[int]) -> Dict[str, Any]:
+        """Each monitored database's size in bytes at the run window's end (pgwatch_db_size_size_b), for
+        CheckupLoop's size chart from the file (platform-all#1306): {"database_sizes": {db: bytes}}, or
+        {"database_sizes_error": reason}. Several series of one database (a source rename): the largest."""
+        _esc = self._escape_promql_label
+        reply = self._instant_at(
+            f'last_over_time(pgwatch_db_size_size_b{{cluster="{_esc(cluster)}", node_name="{_esc(node_name)}"}}[3h])',
+            timeline[-1])
+        if reply.get("status") != "success":
+            return {"database_sizes_error": "the monitoring query failed"}
+        sizes: Dict[str, float] = {}
+        for item in (reply.get("data") or {}).get("result") or []:
+            db = str((item.get("metric") or {}).get("datname") or "")
+            try:
+                value = float((item.get("value") or [None, None])[1])
+            except (TypeError, ValueError):
+                continue
+            if db:
+                sizes[db] = max(sizes.get(db, value), value)
+        if not sizes:
+            return {"database_sizes_error": "monitoring has no database size for this node"}
+        return {"database_sizes": dict(sorted(sizes.items()))}
+
     def _kblocks_node(self, cluster: str, node_name: str, timeline: List[int]) -> Dict[str, Any]:
-        """The node's deadlocks per database over this run's window (cached per node: the same in
-        A005 and K006–K008)."""
+        """The node's deadlocks per database over this run's window, with the hours its ``hourly``
+        lists count (``hourly_timestamps``, the end of each; platform-all#1306: a K node without
+        statement data has no summary stamps). Cached per node: the same in A005 and K006–K008."""
         key = ("deadlocks", str(cluster), str(node_name), timeline[0], timeline[-1])
         cache = self.__dict__.setdefault("_chart_cache", {})
         if key not in cache:
@@ -5312,7 +5337,7 @@ class PostgresReportGenerator:
                 logger.warning(f"Deadlocks for the chart data failed ({node_name}): {e}")
                 series = []
             found = kblocks_facts.deadlocks_by_database(series, timeline)
-            cache[key] = ({"deadlocks": found} if found else
+            cache[key] = ({"deadlocks": found, "hourly_timestamps": list(timeline)} if found else
                           {"deadlocks_error": kblocks_facts.NO_COUNTER})
         return dict(cache[key])
 

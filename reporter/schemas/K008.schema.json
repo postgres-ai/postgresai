@@ -188,7 +188,8 @@
         "settings": { "type": "object", "additionalProperties": { "$ref": "#/$defs/monitoredSetting" } },
         "settings_error": { "type": "string" },
         "deadlocks": { "type": "object", "additionalProperties": { "$ref": "#/$defs/counterHours" } },
-        "deadlocks_error": { "type": "string" }
+        "deadlocks_error": { "type": "string" },
+        "hourly_timestamps": { "$ref": "#/$defs/timeline" }
       }
     }
   }
