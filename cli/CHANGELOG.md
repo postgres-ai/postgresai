@@ -56,6 +56,7 @@
 
 ### Changed
 
+- JSON contract 1.5.0: in full (monitoring) mode, A005 nodes carry `database_sizes` (bytes per database at the window's end) or `database_sizes_error`; A005 and K006–K008 nodes carry `hourly_timestamps` beside `deadlocks`. Express mode does not emit them.
 - JSON contract 1.4.0: in full (monitoring) mode, F004 tables carry `bloat_size_at_window_start_bytes`
   and `bloat_size_at_window_start_at`, the estimate at the window's oldest daily reading
   (https://gitlab.com/postgres-ai/postgresai/-/work_items/535). Express mode does not emit them.

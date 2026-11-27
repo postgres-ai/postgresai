@@ -472,6 +472,21 @@
         "deadlocks_error": {
           "type": "string"
         },
+        "hourly_timestamps": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "database_sizes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "database_sizes_error": {
+          "type": "string"
+        },
         "available": {
           "type": "boolean"
         },
