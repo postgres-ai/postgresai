@@ -359,7 +359,7 @@ ancestor quota or CPU affinity limits it further.
 | `search_path` | none | Default: `pg_catalog`, the schemas of installed extensions, `public`. |
 | `max_rows_per_query` | 100,000 | Rows one metric query may return; the rest is not fetched and is counted. |
 | `max_series_per_query` | 20,000 | Series one metric query may produce per run; the rest is cut and counted. |
-| `drop_numeric` | `true` | Drop NUMERIC columns, as pgwatch's Prometheus sink did. |
+| `drop_numeric` | `true` | Drop NUMERIC columns, as pgwatch's Prometheus sink did. A `metrics.yml` column without the `tag_` prefix that a dashboard or report reads must be `int4`, `int8`, `float4`, `float8` or `bool` (a sample) or text or `pg_lsn` (a label): with the default, NUMERIC is not stored, and `int2`, `oid`, timestamps and the like never are. `tests/collector_pg.rs` (`metric_columns_are_stored`) fails on a new one in the SQL for the CI Postgres version (#340). |
 | `text_columns` | empty | Per metric and column: `label` or `drop`, for text columns without the `tag_` prefix. |
 | `query_texts_interval_s` | 300 | Seconds between query text snapshots. |
 | `objects_interval_s` | 600 | Seconds between object definition snapshots. |

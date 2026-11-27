@@ -10,8 +10,11 @@
 #   is_instance_level: run once per node instead of per database.
 #   node_status: primary | standby, run only on that role.
 #   statement_timeout_seconds, storage_name: as in pgwatch. init_sql is parsed but never run.
-#   Columns: `epoch_ns` is the sample time, `tag_*` columns become labels (prefix stripped), other
-#   numeric columns become `pgwatch_<metric>_<column>` series.
+#   Columns: `epoch_ns` is the sample time, `tag_*` columns become labels (prefix stripped),
+#   int4/int8/float4/float8/bool columns become `pgwatch_<metric>_<column>` series and other text
+#   (and pg_lsn) columns labels. Columns of any other type (NUMERIC with the default
+#   collector.drop_numeric, int2, oid, timestamps, ...) are not stored: cast a value to float8
+#   (#340; tests/collector_pg.rs metric_columns_are_stored).
 # presets.<name>.metrics: metric name -> interval in seconds.
 metrics:
   bgwriter:
@@ -461,7 +464,7 @@ metrics:
             when unit = 's' then numeric_value::numeric
             when unit = 'min' then numeric_value::numeric * 60
             else null
-          end as setting_normalized,
+          end::float8 as setting_normalized, -- float8: the collector drops NUMERIC (#340)
           case unit
             when '8kB' then 'bytes'
             when 'kB' then 'bytes'
@@ -4163,7 +4166,7 @@ metrics:
                     (log_id_hex || '/' || lpad(to_hex(segment_dec * wal_segment_size_bytes), 8, '0'))::pg_lsn
                 )::numeric / wal_segment_size_bytes,
                 2
-            ) as wal_files_behind,
+            )::float8 as wal_files_behind, -- float8: the collector drops NUMERIC (#340)
 
             pg_size_pretty(wal_segment_size_bytes) as wal_segment_size,
             extract(epoch from (now() - last_archived_time))::int as seconds_since_archive,

@@ -2,10 +2,11 @@
 """Write synthetic.jsonl.gz: deterministic series for the metrics the real slice in
 samples.jsonl.gz does not have (dev tool; the output is committed, the tests do not run this).
 
-The real demo box has no host metrics, no lock waits, no invalid indexes, no pg_stat_kcache and
-no stats_reset readings, so without these the reporter queries for them would compare empty
-with empty. Same line format as samples.jsonl.gz (null = staleness marker); loaded next to it by
-mon_harness.build_store.
+The real demo box has no host metrics, no lock waits, no invalid indexes, no pg_stat_kcache, no
+stats_reset readings and no B-tree bloat bytes, so without these the reporter queries for them
+would compare empty with empty. It has no setting_normalized either (not stored before #340),
+which the dashboard compiler needs for the label columns of dashboard 05 panel 14. Same line
+format as samples.jsonl.gz (null = staleness marker); loaded next to it by mon_harness.build_store.
 
     python tests/reporter/mon_fixture/synthetic.py
 """
@@ -187,9 +188,27 @@ def btree_bloat_bytes():
         yield series("pgwatch_pg_btree_bloat_is_na", lab, ts, [0] * len(ts))
 
 
+def settings_normalized():
+    """setting_normalized (bytes or seconds) for the five settings dashboard 05 panel 14 shows.
+    The recording lacks it: pgai-mon did not store it before #340. Each series has the labels of
+    its pgwatch_settings_configured series in samples.jsonl.gz, on grid(): every 30 minutes, then
+    every 5 minutes in the last 26 h."""
+    ts = grid(AT_MS - 8 * DAY, AT_MS, 300_000)
+    for name, value, unit, category, normalized in (
+            ("wal_keep_size", "0", "MB", "Replication / Sending Servers", 0),
+            ("max_slot_wal_keep_size", "-1", "MB", "Replication / Sending Servers", -(1 << 20)),
+            ("min_wal_size", "80", "MB", "Write-Ahead Log / Checkpoints", 80 << 20),
+            ("max_wal_size", "1024", "MB", "Write-Ahead Log / Checkpoints", 1 << 30),
+            ("checkpoint_timeout", "300", "s", "Write-Ahead Log / Checkpoints", 300)):
+        lab = dict(db_labels("target_database"), category=category, setting_name=name, setting_value=value,
+                   unit=unit, unit_normalized="seconds" if unit == "s" else "bytes", vartype="integer")
+        yield series("pgwatch_settings_setting_normalized", lab, ts, [normalized] * len(ts))
+
+
 def main():
     out = HERE / "synthetic.jsonl.gz"
-    rows = [*host(), *resource_sizing_and_spills(), *stats_reset(), *lock_waits(), *invalid_indexes(), *kcache(), *btree_bloat_bytes()]
+    rows = [*host(), *resource_sizing_and_spills(), *stats_reset(), *lock_waits(), *invalid_indexes(), *kcache(), *btree_bloat_bytes(),
+            *settings_normalized()]
     with gzip.GzipFile(out, "wb", compresslevel=9, mtime=0) as f:
         for r in rows:
             f.write((json.dumps(r, sort_keys=True, separators=(",", ":")) + "\n").encode())

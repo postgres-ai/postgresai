@@ -113,15 +113,22 @@ narrow the range or filter, or raise that limit together with Grafana's `GRAFANA
 
 ## Recompile
 
-`compile.py` needs a running pgai-mon with some data (any store): it runs each target's SQL
+`compile.py` needs a running pgai-mon with some data (for the committed dashboards, the fixture
+store below): it runs each target's SQL
 once with `LIMIT 0` to learn its output columns, and reads a metric's label keys for table
 panels and time-series field references. Time-series targets also carry labels their panel's
 links and field settings reference, when the result columns or label keys support them.
 Standard library Python only. A table panel's columns are the label keys its metric
 has in the probe store (plus the fields its transformations name), so the emitted JSON depends
 on the probe: collect with the tags a deployment has (`instances.yml` adds
-`sink_type: prometheus`, which Dashboards 5 and 6 show as a column), and a metric without
-series in the probe (e.g. Dashboard 7's blocked autovacuum workers) gets only the named fields.
+`sink_type: prometheus`, which Dashboards 5 and 6 show as a column). A metric without series
+in the probe gets only Time, Value and the named fields. The committed dashboards are compiled
+against the fixture store (`tests/reporter/mon_fixture/`, built by `mon_harness.build_store`, as
+`tests/grafana_dashboards/test_compiled_dashboards_current.py` does), so to give such a metric
+its columns: add its series to `tests/reporter/mon_fixture/synthetic.py`, run that script to
+rewrite `synthetic.jsonl.gz`, and recompile against a pgai-mon serving the rebuilt fixture
+store. `tests/grafana_dashboards/test_table_targets_have_label_columns.py` fails a table target
+that is only Time and Value (#340).
 
 ```bash
 # from the repository root, with pgai-mon serving on 127.0.0.1:8765
