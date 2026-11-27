@@ -903,3 +903,205 @@ async fn column_types_map_like_pgwatch() {
     assert_eq!(labels["f"], "1.234567e+06");
     assert!(!labels.contains_key("ts") && !labels.contains_key("num"));
 }
+
+// ---------------------------------------------------------------------------------------
+// mon/metrics.yml as the collector stores it.
+
+fn metrics_yml() -> pgai_mon::metricdefs::MetricsFile {
+    pgai_mon::metricdefs::load(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("metrics.yml")).unwrap()
+}
+
+/// The settings metric stores setting_normalized (#340): bytes for a size setting and seconds
+/// for a time setting, as Postgres itself reads the setting's text. It was a NUMERIC column,
+/// which the collector drops (as pgwatch's sink did), so dashboard 05's "WAL-related settings"
+/// showed no normalized values.
+#[tokio::test]
+async fn settings_metric_stores_setting_normalized() {
+    let url = need_pg!();
+    let a = admin(&url).await;
+    let h = harness(CollectorCfg::default());
+    let def = metrics_yml().metrics["settings"].clone();
+    let (stop, rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(collector::run_source(
+        source("settings", &url),
+        vec![Scheduled {
+            name: "settings".into(),
+            interval_s: 60,
+            def,
+        }],
+        vec![],
+        h.ctx.clone(),
+        rx,
+    ));
+    wait_for("settings collected", 15, || {
+        h.sink
+            .value("pgwatch_settings_configured", ("setting_name", "max_wal_size"))
+            .is_some()
+    })
+    .await;
+    // units MB, 8kB, kB, B (sizes) and s, ms, min (times)
+    let want = a
+        .query(
+            "select name, case when unit in ('ms', 's', 'min') \
+               then extract(epoch from current_setting(name)::interval)::float8 \
+               else pg_size_bytes(current_setting(name))::float8 end \
+             from pg_settings where name in ('max_wal_size', 'min_wal_size', 'wal_keep_size', \
+               'shared_buffers', 'work_mem', 'track_activity_query_size', 'checkpoint_timeout', \
+               'wal_writer_delay', 'log_rotation_age')",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(want.len(), 9);
+    for r in want {
+        let (name, v): (String, f64) = (r.get(0), r.get(1));
+        let got = h
+            .sink
+            .value("pgwatch_settings_setting_normalized", ("setting_name", name.as_str()));
+        assert!(
+            got.is_some_and(|g| (g - v).abs() <= v.abs() * 1e-12),
+            "{name}: setting_normalized {got:?}, want {v}"
+        );
+    }
+    // -1 (no limit, the default) is scaled like a value: -1 MB. The CLI's pretty_value reads the
+    // same column.
+    let unlimited: String = a
+        .query_one(
+            "select setting from pg_settings where name = 'max_slot_wal_keep_size'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        unlimited, "-1",
+        "the test server keeps max_slot_wal_keep_size at its default"
+    );
+    assert_eq!(
+        h.sink.value(
+            "pgwatch_settings_setting_normalized",
+            ("setting_name", "max_slot_wal_keep_size")
+        ),
+        Some(-1048576.0)
+    );
+    let _ = stop.send(true);
+}
+
+/// A metrics.yml column of a type the collector drops (NUMERIC, int2, oid, timestamps, json, ...;
+/// see collector::PgVal) is not stored, so a panel reading it is silently empty (#340). Only the
+/// ones nothing reads keep such a type. Checks the SQL for this server's major version (CI:
+/// Postgres 17); the other versions' SQL was checked by hand on 14 to 18 for #340.
+#[tokio::test]
+async fn metric_columns_are_stored() {
+    let url = need_pg!();
+    let a = admin(&url).await;
+    let db = fresh_db(&a, &url, "pgai_t_stored").await;
+    // What `postgresai prepare-db` gives a monitored database: pg_stat_statements and the
+    // postgres_ai.pg_statistic view (cli/sql/03.permissions.sql) the bloat metrics read.
+    let (setup, conn) = tokio_postgres::connect(&db, NoTls).await.unwrap();
+    tokio::spawn(conn);
+    setup
+        .batch_execute(
+            "create extension if not exists pg_stat_statements; \
+             create schema postgres_ai; \
+             create view postgres_ai.pg_statistic as \
+             select n.nspname as schemaname, c.relname as tablename, a.attname, \
+               s.stanullfrac as null_frac, s.stawidth as avg_width, false as inherited \
+             from pg_catalog.pg_statistic s \
+             join pg_catalog.pg_class c on c.oid = s.starelid \
+             join pg_catalog.pg_namespace n on n.oid = c.relnamespace \
+             join pg_catalog.pg_attribute a on a.attrelid = s.starelid and a.attnum = s.staattnum \
+             where a.attnum > 0 and not a.attisdropped",
+        )
+        .await
+        .unwrap();
+    let c = collector::connect(&db, &CollectorCfg::default()).await.unwrap();
+    let major: i32 = c
+        .query_one("select current_setting('server_version_num')::int / 10000", &[])
+        .await
+        .unwrap()
+        .get(0);
+    // Not stored (NUMERIC, oid, jsonb); no dashboard, report or CLI path reads them from pgai-mon.
+    // Cast one to float8 (or int8, text) before anything reads it.
+    const UNREAD: &[&str] = &[
+        "pg_stat_replication.current_wal_lsn",
+        "pg_stat_replication.flush_lsn",
+        "pg_stat_replication.replay_lsn",
+        "pg_stat_replication.reply_time_lag",
+        "pg_stat_replication.sent_lsn",
+        "pg_stat_replication.write_lsn",
+        "pg_stat_wal_receiver.flushed_lsn",
+        "pg_stat_wal_receiver.last_msg_receipt_time",
+        "pg_stat_wal_receiver.last_msg_send_time",
+        "pg_stat_wal_receiver.latest_end_lsn",
+        "pg_stat_wal_receiver.latest_end_time",
+        "pg_stat_wal_receiver.receive_start_lsn",
+        "pg_vacuum_progress.query_start",
+        "pg_xlog_position.bytes",
+        "rarely_used_indexes.index_id",
+        "rarely_used_indexes.index_scan_pct",
+        "rarely_used_indexes.scans_per_write",
+        "redundant_indexes.index_id",
+        "unused_indexes.index_id",
+        "unused_indexes.index_scan_pct",
+        "unused_indexes.scans_per_write",
+        "xmin_horizon_snapshot.components",
+    ];
+    // The pg_index_pilot extension's metrics need its index_pilot schema, so their columns are
+    // not checked here (dashboard 11 reads best_ratio, a real, and config_value_normalized, a float8).
+    const NOT_DESCRIBED: &[&str] = &["pg_index_pilot", "pg_index_pilot_config"];
+    // What the collector keeps of a column without the tag_ prefix: a sample or a label
+    // (collector::PgVal's from_sql and row_fields; change this list with them).
+    let stored = |t: &tokio_postgres::types::Type| {
+        use tokio_postgres::types::Type;
+        [
+            Type::INT4,
+            Type::INT8,
+            Type::FLOAT4,
+            Type::FLOAT8,
+            Type::BOOL,
+            Type::TEXT,
+            Type::VARCHAR,
+            Type::NAME,
+            Type::BPCHAR,
+            Type::UNKNOWN,
+            Type::PG_LSN,
+        ]
+        .contains(t)
+    };
+    let (mut skipped, mut dropped, mut unread_seen) = (vec![], vec![], vec![]);
+    for (name, def) in &metrics_yml().metrics {
+        let Some(sql) = def.sql_for(major as u32) else {
+            continue;
+        };
+        let st = match c.prepare(sql).await {
+            Ok(st) => st,
+            Err(e) => {
+                skipped.push(format!("{name}: {}", code(&anyhow::Error::from(e))));
+                continue;
+            }
+        };
+        for col in st.columns() {
+            let id = format!("{name}.{}", col.name());
+            if stored(col.type_()) || col.name().starts_with("tag_") {
+                continue;
+            }
+            if UNREAD.contains(&id.as_str()) {
+                unread_seen.push(id);
+            } else {
+                dropped.push(format!("{id} ({})", col.type_()));
+            }
+        }
+    }
+    unread_seen.sort();
+    let want_skipped: Vec<String> = NOT_DESCRIBED.iter().map(|m| format!("{m}: 42P01")).collect();
+    assert_eq!(skipped, want_skipped, "metrics whose SQL does not prepare");
+    assert_eq!(
+        unread_seen, UNREAD,
+        "UNREAD lists exactly the dropped columns nothing reads"
+    );
+    assert!(
+        dropped.is_empty(),
+        "columns of these types are not stored; cast them to float8, int8 or text: {dropped:?}"
+    );
+}

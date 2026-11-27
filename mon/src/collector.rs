@@ -28,7 +28,8 @@ use tokio_postgres::Client;
 /// - timestamptz, timestamp, date (Go time.Time): not samples; as tags Go's time format in
 ///   UTC (`2024-01-02 03:04:05.123456 +0000 UTC`), as pgwatch in a UTC container prints it.
 /// - Everything else (reg* types, json, arrays, intervals, ...): not samples; as tags the raw
-///   value. No metric in metrics.yml returns one of these outside a cast.
+///   value. Outside tags, metrics.yml returns one only in columns nothing reads (the UNREAD list
+///   of tests/collector_pg.rs metric_columns_are_stored, e.g. a jsonb column).
 #[derive(Debug, Clone)]
 pub enum PgVal {
     Null,
