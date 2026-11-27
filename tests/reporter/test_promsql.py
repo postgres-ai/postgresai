@@ -18,7 +18,8 @@ def test_every_reporter_query_compiles(cassette):
     """Each query the reporter sent in the recorded run compiles (the CI test without pgai-mon)."""
     for e in cassette.values():
         if e["kind"] == "instant":
-            sql = promsql.compile_instant(e["query"], e["time"] * 1000)
+            query, at = eq.mon_form(e["query"])
+            sql = promsql.compile_instant(query, (e["time"] if at is None else at) * 1000)
         else:
             sql = promsql.compile_range(e["query"], int(e["start"] * 1000), int(e["end"] * 1000),
                                         promsql.duration_ms(e["step"]))

@@ -541,6 +541,17 @@ def test_first_report_ends_now_later_ones_on_the_hour(tmp_path, use_current_time
     assert ["--use-current-time" in line.split() for line in calls.read_text().splitlines()] == expected
 
 
+@pytest.mark.unit
+def test_a_failed_first_report_is_retried_with_its_window_ending_now(tmp_path):
+    """A failed first run is retried after the back-off: the retry is still the
+    box's first report, so its window still ends now."""
+    proc, calls, _ = run_loop(tmp_path, stop_after_sleeps=3, python_exit=1,
+                              env_extra={"REPORTER_READINESS_TIMEOUT_SECONDS": "0"})
+
+    assert proc.returncode == STUB_EXIT_CODE, proc.stderr
+    assert ["--use-current-time" in c.split() for c in calls] == [True, True]
+
+
 def run_with_link_counts(tmp_path, start, after_sleep, change_at_sleep=1, stop_after_sleeps=3):
     """The loop with `stat` stubbed: link counts per mounted file (instances.yml,
     .pgwatch-config) as a single-file bind mount shows them: `start`, then `after_sleep`

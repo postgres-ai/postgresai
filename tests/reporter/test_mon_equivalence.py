@@ -1,10 +1,10 @@
 """The reporter on pgai-mon gives the same answers and the same reports as on VictoriaMetrics.
 
 Needs a pgai-mon binary ($PGAI_MON_BIN, or mon/target/*/pgai-mon); skipped without one (failed when CI is set). Builds a
-store from tests/reporter/mon_fixture/ (real pgwatch data, 8 days, 3,705 series, plus 95 synthetic
+store from tests/reporter/mon_fixture/ (real pgwatch data, 8 days, 3,705 series, plus 107 synthetic
 series for what the demo box lacks: host metrics, lock waits, invalid indexes, pg_stat_kcache,
-stats_reset, the older btree bloat gauges), serves it on 127.0.0.1 and compares, for the same
-samples:
+stats_reset, the older btree bloat gauges, setting_normalized, archiving, deadlocks, the stack's
+`up`), serves it on 127.0.0.1 and compares, for the same samples:
 
 - every query in the cassette (what VictoriaMetrics v1.140.0 answered when the reporter ran at
   FIXTURE_AT) with the reporter's answer from pgai-mon (reporter/mon_client.py);
@@ -74,7 +74,12 @@ def test_every_cassette_query_matches_victoriametrics(mon, cassette):
     diffs, nonempty = {}, 0
     for key, e in sorted(cassette.items()):
         if e["kind"] == "instant":
-            new = client.query_instant(e["query"])
+            query, at = eq.mon_form(e["query"])
+            new = client.query_instant(query, at=at)
+            if at is not None:  # VictoriaMetrics stamps the samples with the evaluation time, pgai-mon with <t>
+                for r in (new.get("data") or {}).get("result") or []:
+                    assert r["value"][0] == at, (e["query"], r)
+                    r["value"][0] = e["time"]
             assert new.get("status") == "success", (e["query"], new)
             nonempty += bool((e["response"].get("data") or {}).get("result"))
         else:
@@ -84,9 +89,10 @@ def test_every_cassette_query_matches_victoriametrics(mon, cassette):
         if d:
             diffs[e["query"]] = d[:3]
     assert not diffs, f"{len(diffs)} of {len(cassette)} queries differ: {list(diffs.items())[:5]}"
-    # the fixture must keep exercising the queries (an empty store would match trivially); 511
-    # recorded, 431 non-empty since G003 asks for lock waits per day (#530; 499 and 427 before)
-    assert len(cassette) >= 490 and nonempty >= 410, (len(cassette), nonempty)
+    # the fixture must keep exercising the queries (an empty store would match trivially):
+    # 630 recorded, 549 non-empty since main's K005, G001, A005 and K006-K008 facts and the synthetic
+    # archiving, deadlocks and `up` (511 and 431 since G003 asked for lock waits per day, #530)
+    assert len(cassette) >= 600 and nonempty >= 520, (len(cassette), nonempty)
 
 
 def test_range_errors_are_not_silent(mon):

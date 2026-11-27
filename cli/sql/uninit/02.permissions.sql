@@ -6,8 +6,25 @@ set search_path = pg_catalog, pg_temp;
 -- The CLI reads the "unprepare-db:" WARNINGs. A higher setting would hide them.
 set client_min_messages = warning;
 
--- Drop the postgres_ai.pg_statistic view
+-- Drop the postgres_ai.pg_statistic view and the function it reads (#525).
+-- The platform's prepare-db also builds public.pg_statistic over the function:
+-- drop that view too, and only if it reads the function (#526).
 drop view if exists postgres_ai.pg_statistic;
+do {{DO_QUOTE}}
+begin
+  if exists (
+    select from pg_catalog.pg_depend d
+    join pg_catalog.pg_rewrite r on r.oid = d.objid
+    join pg_catalog.pg_class c on c.oid = r.ev_class
+    where d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass
+      and d.refclassid = 'pg_catalog.pg_proc'::pg_catalog.regclass
+      and d.refobjid = pg_catalog.to_regprocedure('postgres_ai.pg_statistic_rows()')
+      and c.oid = pg_catalog.to_regclass('public.pg_statistic') and c.relkind = 'v'
+  ) then
+    drop view public.pg_statistic;
+  end if;
+end {{DO_QUOTE}};
+drop function if exists postgres_ai.pg_statistic_rows();
 
 -- Revoke only the grants that the role holds. The postgres_ai schema stays
 -- because it may contain customer objects. The pg_read_all_stats membership

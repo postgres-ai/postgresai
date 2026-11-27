@@ -737,6 +737,17 @@ export async function verifyInitSetupViaSupabase(params: {
     if (!viewPrivRes.rows?.[0]?.ok) {
       missingRequired.push("SELECT on view postgres_ai.pg_statistic");
     }
+    // The view reads this function as the caller (#525); older views do not.
+    const fnPrivRes = await params.client.query(
+      `SELECT CASE
+        WHEN to_regprocedure('postgres_ai.pg_statistic_rows()') IS NULL THEN true
+        ELSE has_function_privilege('${escapeLiteral(role)}', 'postgres_ai.pg_statistic_rows()', 'EXECUTE')
+      END as ok`,
+      true
+    );
+    if (!fnPrivRes.rows?.[0]?.ok) {
+      missingRequired.push("EXECUTE on function postgres_ai.pg_statistic_rows()");
+    }
   }
 
   // Check USAGE on public schema (check existence first to avoid has_schema_privilege throwing)

@@ -198,8 +198,64 @@ export interface FetchIssuesParams {
   debug?: boolean;
 }
 
+/** Rows `issues list` and `list_issues` return when no limit is given. */
+export const DEFAULT_ISSUES_LIMIT = 50;
+
+/** The most rows the API returns for one request (PostgREST max-rows). */
+export const MAX_ISSUES_PER_REQUEST = 500;
+
+export interface IssuesPage {
+  items: IssueListItem[];
+  /** Rows skipped before this page. */
+  offset: number;
+  /** All rows matching the filters, or null when the server did not say. */
+  total: number | null;
+}
+
+/**
+ * The total from a PostgREST `Content-Range` header: "0-19/43" and "*\/43"
+ * give 43; "0-19/*", a malformed value or no header give null.
+ */
+export function parseContentRangeTotal(header: string | null): number | null {
+  const match = /\/(\d+)\s*$/.exec(header ?? "");
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * The line that tells the caller where this page sits in the whole list, so
+ * a short page is never mistaken for the complete list:
+ * "Showing 1–50 of 120 open issues. Use --offset 50 for the next page, or
+ * --limit 120 for all." `option` renders a parameter for the caller's
+ * surface (CLI flag or MCP argument). Null when the total is unknown.
+ */
+export function issuesPageSummary(
+  page: { shown: number; offset: number; total: number | null; status?: "open" | "closed"; hiddenOnly?: boolean },
+  option: (name: "offset" | "limit", value: number) => string = (name, value) => `--${name} ${value}`
+): string | null {
+  const { shown, offset, total, status, hiddenOnly } = page;
+  if (total === null) return null;
+  const noun = [hiddenOnly ? "hidden" : "", status ?? "", "issues"].filter(Boolean).join(" ");
+  if (total === 0) return `No ${noun}.`;
+  if (shown === 0 && offset >= total) {
+    return `Showing none of ${total} ${noun}: ${option("offset", offset)} is past the end.`;
+  }
+  if (shown === 0) return `Showing none of ${total} ${noun}.`;
+  const last = offset + shown;
+  let line = `Showing ${offset + 1}–${last} of ${total} ${noun}.`;
+  if (last < total) {
+    line += ` Use ${option("offset", last)} for the next page`;
+    line += total <= MAX_ISSUES_PER_REQUEST ? `, or ${option("limit", total)} for all.` : ".";
+  }
+  return line;
+}
+
 export async function fetchIssues(params: FetchIssuesParams): Promise<IssueListItem[]> {
-  const { apiKey, apiBaseUrl, orgScope, orgId, status, limit = 20, offset = 0, hiddenOnly, debug } = params;
+  return (await fetchIssuesPage(params)).items;
+}
+
+/** One page of issues plus the total matching the filters. */
+export async function fetchIssuesPage(params: FetchIssuesParams): Promise<IssuesPage> {
+  const { apiKey, apiBaseUrl, orgScope, orgId, status, limit = DEFAULT_ISSUES_LIMIT, offset = 0, hiddenOnly, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
@@ -229,6 +285,10 @@ export async function fetchIssues(params: FetchIssuesParams): Promise<IssueListI
   }
 
   const headers: Record<string, string> = issueRequestHeaders(apiKey, orgScope);
+  // count=exact makes the server put the total in Content-Range ("0-19/43").
+  // One Prefer header carrying both preferences: a second one would replace
+  // the first.
+  headers.Prefer = `${headers.Prefer}, count=exact`;
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -249,10 +309,18 @@ export async function fetchIssues(params: FetchIssuesParams): Promise<IssueListI
   }
 
   const data = await response.text();
+  const total = parseContentRangeTotal(response.headers.get("content-range"));
+
+  // With count=exact, PostgREST answers an offset past the last row with 416
+  // (range not satisfiable) and "*/<total>". That is an empty page, as it was
+  // before the count was asked for, not an error. Any other 416 is an error.
+  if (response.status === 416 && total !== null && offset >= total) {
+    return { items: [], offset, total };
+  }
 
   if (response.ok) {
     try {
-      return JSON.parse(data) as IssueListItem[];
+      return { items: JSON.parse(data) as IssueListItem[], offset, total };
     } catch {
       throw new Error(`Failed to parse issues response: ${data}`);
     }
@@ -672,7 +740,100 @@ export interface UpdateIssueParams {
   labels?: string[];
   /** Hide (true) or unhide (false) the issue; staff-only server-side (platform-all #562). */
   hidden?: boolean;
+  /**
+   * With hidden=false: ask for the new-issue email and Slack post. The platform
+   * sends them only on the update that makes an issue visible for the first
+   * time (platform-all #837), so the issue is read first and the outcome says
+   * whether they were requested.
+   */
+  notify?: boolean;
   debug?: boolean;
+}
+
+/**
+ * What an unhide with `notify` did. The platform's v1.issue_update returns
+ * nothing about it, so this is decided from the issue as read just before.
+ */
+export type NotifyOutcome =
+  | { requested: true; reason: "first_publish" }
+  | { requested: false; reason: "visible_before"; first_visible_at: string }
+  | { requested: false; reason: "already_visible" };
+
+/** One line for a person: what `notify` did. */
+export function describeNotifyOutcome(outcome: NotifyOutcome): string {
+  switch (outcome.reason) {
+    case "first_publish":
+      return "Notifications requested: the new-issue email and Slack post go out now.";
+    case "visible_before":
+      return `Nothing sent: this issue was visible before (${outcome.first_visible_at}); the email and Slack post go out only the first time.`;
+    case "already_visible":
+      return "Nothing sent: the issue is already visible.";
+  }
+}
+
+interface PublishState {
+  is_hidden: boolean;
+  first_visible_at: string | null;
+}
+
+/**
+ * Throws what an unhide with notify would refuse with (platform without notify
+ * support, issue not found) before anything else happens: callers run it
+ * before uploading attachments so a refusal leaves nothing behind.
+ */
+export async function checkNotifyPossible(params: {
+  apiKey: string;
+  apiBaseUrl: string;
+  orgScope?: OrgScope;
+  issueId: string;
+  debug?: boolean;
+}): Promise<void> {
+  const { apiKey, apiBaseUrl, orgScope, issueId, debug } = params;
+  await readPublishState(normalizeBaseUrl(apiBaseUrl), issueRequestHeaders(apiKey, orgScope), issueId, debug);
+}
+
+/**
+ * Read whether the issue is hidden and when it was first visible. A platform
+ * without first_visible_at (before platform-all #837) answers 400 for the
+ * unknown column: that is reported as "not supported", not as a raw error.
+ */
+async function readPublishState(
+  base: string,
+  headers: Record<string, string>,
+  issueId: string,
+  debug?: boolean
+): Promise<PublishState> {
+  const url = new URL(`${base}/issues`);
+  url.searchParams.set("select", "id,is_hidden,first_visible_at");
+  url.searchParams.set("id", `eq.${issueId}`);
+  url.searchParams.set("limit", "1");
+  if (debug) {
+    console.error(`Debug: GET URL: ${url.toString()}`);
+  }
+  const response = await fetch(url.toString(), { method: "GET", headers });
+  const data = await response.text();
+  if (debug) {
+    console.error(`Debug: Response status: ${response.status}`);
+  }
+  if (!response.ok) {
+    if (response.status === 400 && /first_visible_at/.test(data)) {
+      throw new Error(
+        "This PostgresAI platform does not support notify on unhide yet. Unhide without it, or retry after the platform update."
+      );
+    }
+    throw new Error(formatHttpError("Failed to read the issue", response.status, data));
+  }
+  let rows: unknown;
+  try {
+    rows = JSON.parse(data);
+  } catch {
+    throw new Error(`Failed to parse issue response: ${data}`);
+  }
+  const row = Array.isArray(rows) ? (rows[0] as Partial<PublishState> | undefined) : undefined;
+  if (!row) {
+    throw new Error(`Issue not found: ${issueId}`);
+  }
+  return { is_hidden: row.is_hidden === true, first_visible_at: row.first_visible_at ?? null };
 }
 
 export interface UpdatedIssue {
@@ -699,8 +860,8 @@ export interface UpdatedIssue {
  * @returns The updated issue object
  * @throws Error if API key or issueId is missing, if no fields to update are provided, or if the API call fails
  */
-export async function updateIssue(params: UpdateIssueParams): Promise<UpdatedIssue> {
-  const { apiKey, apiBaseUrl, orgScope, issueId, title, description, status, labels, hidden, debug } = params;
+export async function updateIssue(params: UpdateIssueParams): Promise<UpdatedIssue & { notify?: NotifyOutcome }> {
+  const { apiKey, apiBaseUrl, orgScope, issueId, title, description, status, labels, hidden, notify, debug } = params;
   if (!apiKey) {
     throw new Error("API key is required");
   }
@@ -709,6 +870,9 @@ export async function updateIssue(params: UpdateIssueParams): Promise<UpdatedIss
   }
   if (title === undefined && description === undefined && status === undefined && labels === undefined && hidden === undefined) {
     throw new Error("At least one field to update is required (title, description, status, labels, or hidden)");
+  }
+  if (notify && hidden !== false) {
+    throw new Error("notify works only together with unhiding the issue (hidden=false)");
   }
 
   const base = normalizeBaseUrl(apiBaseUrl);
@@ -733,9 +897,24 @@ export async function updateIssue(params: UpdateIssueParams): Promise<UpdatedIss
   if (hidden !== undefined) {
     bodyObj.p_is_hidden = hidden;
   }
-  const body = JSON.stringify(bodyObj);
 
   const headers: Record<string, string> = issueRequestHeaders(apiKey, orgScope);
+
+  // Only the first publish can notify; the server ignores p_notify otherwise
+  // and says nothing, so decide (and report) from the issue as it is now.
+  let notifyOutcome: NotifyOutcome | undefined;
+  if (notify) {
+    const state = await readPublishState(base, headers, issueId, debug);
+    if (!state.is_hidden) {
+      notifyOutcome = { requested: false, reason: "already_visible" };
+    } else if (state.first_visible_at) {
+      notifyOutcome = { requested: false, reason: "visible_before", first_visible_at: state.first_visible_at };
+    } else {
+      notifyOutcome = { requested: true, reason: "first_publish" };
+      bodyObj.p_notify = true;
+    }
+  }
+  const body = JSON.stringify(bodyObj);
 
   if (debug) {
     const debugHeaders: Record<string, string> = { ...headers, "access-token": maskSecret(apiKey) };
@@ -760,11 +939,13 @@ export async function updateIssue(params: UpdateIssueParams): Promise<UpdatedIss
   const data = await response.text();
 
   if (response.ok) {
+    let updated: UpdatedIssue;
     try {
-      return JSON.parse(data) as UpdatedIssue;
+      updated = JSON.parse(data) as UpdatedIssue;
     } catch {
       throw new Error(`Failed to parse update issue response: ${data}`);
     }
+    return notifyOutcome ? { ...updated, notify: notifyOutcome } : updated;
   } else {
     throw new Error(formatHttpError("Failed to update issue", response.status, data));
   }

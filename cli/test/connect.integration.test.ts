@@ -804,7 +804,7 @@ describe.skipIf(!ADMIN)("prepareDatabase (real Postgres)", () => {
           "/v1/organizations",
           "/v1/organizations/11111111-2222-3333-4444-555555555555/postgres",
           "/v1/organizations/11111111-2222-3333-4444-555555555555/postgres/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-          // The result's Health Matrix link: the org alias and the database's project.
+          // The result's Database health link: the org alias and the database's project.
           "/rpc/orgs_list",
           "/rpc/projects_list",
         ]);

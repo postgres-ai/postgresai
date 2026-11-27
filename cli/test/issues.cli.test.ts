@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { resolve } from "path";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync } from "fs";
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 
 function runCli(args: string[], env: Record<string, string> = {}) {
@@ -46,8 +46,10 @@ function isolatedEnv(extra: Record<string, string> = {}) {
 // staff-only hidden issue (platform-all #562).
 const ORDINARY_ISSUE_ID = "11111111-1111-1111-1111-111111111111";
 const HIDDEN_ISSUE_ID = "22222222-2222-2222-2222-222222222222";
+// Hidden now, but visible once before (platform-all #837: first_visible_at set).
+const REHIDDEN_ISSUE_ID = "33333333-3333-3333-3333-333333333333";
 
-async function startFakeApi(opts: { rejectHiddenWrites?: boolean; seenBy?: boolean } = {}) {
+async function startFakeApi(opts: { rejectHiddenWrites?: boolean; seenBy?: boolean; noFirstVisibleAt?: boolean; listRows?: number } = {}) {
   const requests: Array<{
     method: string;
     pathname: string;
@@ -213,6 +215,33 @@ async function startFakeApi(opts: { rejectHiddenWrites?: boolean; seenBy?: boole
         const idParam = url.searchParams.get("id") || "";
         // No id filter means `issues list`. Return one ordinary row and one
         // hidden row so the caller can assert on both flag states at once.
+        // opts.listRows: N open issues paged like PostgREST — limit/offset,
+        // the total in Content-Range when Prefer asks for count=exact, and
+        // 416 for an offset past the last row.
+        if (!idParam && opts.listRows !== undefined) {
+          const all = Array.from({ length: opts.listRows }, (_, i) => ({
+            id: `00000000-0000-0000-0000-${String(opts.listRows! - i).padStart(12, "0")}`,
+            title: `Issue ${opts.listRows! - i}`,
+            status: 0,
+            created_at: "2025-01-01T00:00:00Z",
+            is_hidden: false,
+          }));
+          const limit = Number(url.searchParams.get("limit") ?? all.length);
+          const offset = Number(url.searchParams.get("offset") ?? 0);
+          const counted = /count=exact/.test(headers["prefer"] || "");
+          if (counted && offset > 0 && offset >= all.length) {
+            return new Response(JSON.stringify({ code: "PGRST103", message: "Requested range not satisfiable" }), {
+              status: 416,
+              headers: { "Content-Type": "application/json", "Content-Range": `*/${all.length}` },
+            });
+          }
+          const rows = all.slice(offset, offset + Math.min(limit, 500));
+          const range = rows.length ? `${offset}-${offset + rows.length - 1}` : "*";
+          return new Response(JSON.stringify(rows), {
+            status: 200,
+            headers: { "Content-Type": "application/json", "Content-Range": `${range}/${counted ? all.length : "*"}` },
+          });
+        }
         if (!idParam) {
           const rows = [
             { id: ORDINARY_ISSUE_ID, title: "Ordinary", status: 0, created_at: "2025-01-01T00:00:00Z", is_hidden: false },
@@ -225,6 +254,13 @@ async function startFakeApi(opts: { rejectHiddenWrites?: boolean; seenBy?: boole
           );
         }
         const issueId = idParam.replace("eq.", "");
+        // A platform before platform-all #837 has no first_visible_at column.
+        if (opts.noFirstVisibleAt && (url.searchParams.get("select") || "").includes("first_visible_at")) {
+          return new Response(
+            JSON.stringify({ code: "42703", message: "column issues.first_visible_at does not exist" }),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+          );
+        }
         return new Response(
           JSON.stringify([
             {
@@ -237,7 +273,11 @@ async function startFakeApi(opts: { rejectHiddenWrites?: boolean; seenBy?: boole
               action_items: [],
               // Mirrors the server: the column is present on every row, and
               // carries false for anything that is not actually hidden.
-              is_hidden: issueId === HIDDEN_ISSUE_ID,
+              is_hidden: issueId === HIDDEN_ISSUE_ID || issueId === REHIDDEN_ISSUE_ID,
+              first_visible_at:
+                issueId === HIDDEN_ISSUE_ID ? null
+                : issueId === REHIDDEN_ISSUE_ID ? "2026-11-01T10:00:00+00:00"
+                : "2025-01-01T00:00:00+00:00",
             },
           ]),
           { status: 200, headers: { "Content-Type": "application/json" } }
@@ -1408,6 +1448,80 @@ describe("hidden-issue flag reaches CLI output only when true (platform-all #562
     }
   });
 
+  test("issues update --no-hidden --notify: requested on the first publish only, and says so", async () => {
+    const api = await startFakeApi();
+    try {
+      const env = isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl });
+      const first = await runCliAsync(["issues", "update", HIDDEN_ISSUE_ID, "--no-hidden", "--notify"], env);
+      expect(first.status).toBe(0);
+      expect(first.stderr).toContain("Notifications requested: the new-issue email and Slack post go out now.");
+      const again = await runCliAsync(["issues", "update", REHIDDEN_ISSUE_ID, "--no-hidden", "--notify", "--json"], env);
+      expect(again.status).toBe(0);
+      expect(again.stderr).toContain("Nothing sent: this issue was visible before (2026-11-01T10:00:00+00:00)");
+      expect(JSON.parse(again.stdout).notify).toEqual({
+        requested: false,
+        reason: "visible_before",
+        first_visible_at: "2026-11-01T10:00:00+00:00",
+      });
+
+      const updates = api.requests.filter((x) => x.pathname.endsWith("/rpc/issue_update"));
+      expect(updates.map((u) => u.bodyJson)).toEqual([
+        { p_id: HIDDEN_ISSUE_ID, p_is_hidden: false, p_notify: true },
+        { p_id: REHIDDEN_ISSUE_ID, p_is_hidden: false },
+      ]);
+      // The state read carries the hidden-issue capability header, like every issue request.
+      const reads = api.requests.filter((x) => x.method === "GET" && x.pathname.endsWith("/issues"));
+      expect(reads.length).toBe(2);
+      expect(reads.every((r) => r.headers["x-pgai-include-hidden"] === "true")).toBe(true);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("issues update --notify without --no-hidden is refused before any request", async () => {
+    const api = await startFakeApi();
+    try {
+      const env = isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl });
+      const res = await runCliAsync(["issues", "update", HIDDEN_ISSUE_ID, "--title", "T", "--notify"], env);
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain("--notify works only with --no-hidden");
+      expect(api.requests).toHaveLength(0);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("issues update --no-hidden --notify on a platform before notify support: clear refusal, nothing unhidden", async () => {
+    const api = await startFakeApi({ noFirstVisibleAt: true });
+    try {
+      const env = isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl });
+      const res = await runCliAsync(["issues", "update", HIDDEN_ISSUE_ID, "--no-hidden", "--notify"], env);
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain("does not support notify on unhide yet");
+      expect(api.requests.filter((x) => x.pathname.endsWith("/rpc/issue_update"))).toHaveLength(0);
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("issues update --no-hidden --notify --attach: a refused notify uploads nothing", async () => {
+    const api = await startFakeApi({ noFirstVisibleAt: true });
+    const dir = mkdtempSync(resolve(tmpdir(), "notify-attach-"));
+    const file = resolve(dir, "pic.png");
+    writeFileSync(file, "PNGBYTES");
+    try {
+      const env = isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: api.baseUrl, PGAI_STORAGE_BASE_URL: api.storageBaseUrl });
+      const res = await runCliAsync(["issues", "update", HIDDEN_ISSUE_ID, "--no-hidden", "--notify", "--attach", file], env);
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain("does not support notify on unhide yet");
+      expect(api.uploads).toHaveLength(0);
+      expect(api.requests.filter((x) => x.pathname.endsWith("/rpc/issue_update"))).toHaveLength(0);
+    } finally {
+      api.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a non-staff --hidden create surfaces the server's refusal and exits non-zero", async () => {
     // The CLI does no staff detection of its own: the platform guard
     // (user_is_staff() in v1.issue_create) is the only authority.
@@ -1505,6 +1619,104 @@ describe("issue status: label + open-by-default (postgresai #367)", () => {
       expect(r.status).toBe(0);
       const out = JSON.parse(r.stdout.trim());
       expect(out.issue.status).toBe("open");
+    } finally {
+      api.stop();
+    }
+  });
+});
+
+describe("issues list: page size and total", () => {
+  const env = (baseUrl: string) => isolatedEnv({ PGAI_API_KEY: "test-key", PGAI_API_BASE_URL: baseUrl });
+  const issuesReq = (api: Awaited<ReturnType<typeof startFakeApi>>) =>
+    api.requests.find((x) => x.method === "GET" && x.pathname.endsWith("/issues"));
+
+  test("asks for 50 rows and the total, and says the page is not the whole list", async () => {
+    const api = await startFakeApi({ listRows: 120 });
+    try {
+      const r = await runCliAsync(["issues", "list", "--json"], env(api.baseUrl));
+      expect(r.status).toBe(0);
+      const req = issuesReq(api)!;
+      expect(new URLSearchParams(req.search).get("limit")).toBe("50");
+      expect(req.headers["prefer"]).toBe("return=representation, count=exact");
+      // stdout stays the bare array; the line goes to stderr.
+      expect(JSON.parse(r.stdout.trim())).toHaveLength(50);
+      expect(r.stdout).not.toContain("Showing");
+      expect(r.stderr.trim()).toBe(
+        "Showing 1–50 of 120 open issues. Use --offset 50 for the next page, or --limit 120 for all."
+      );
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("following the hint reaches the last page, which says nothing more is left", async () => {
+    const api = await startFakeApi({ listRows: 120 });
+    try {
+      const r = await runCliAsync(["issues", "list", "--json", "--offset", "100"], env(api.baseUrl));
+      expect(r.status).toBe(0);
+      expect(JSON.parse(r.stdout.trim())).toHaveLength(20);
+      expect(r.stderr.trim()).toBe("Showing 101–120 of 120 open issues.");
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("--limit with the total returns everything and says so", async () => {
+    const api = await startFakeApi({ listRows: 120 });
+    try {
+      const r = await runCliAsync(["issues", "list", "--json", "--limit", "120"], env(api.baseUrl));
+      expect(r.status).toBe(0);
+      expect(JSON.parse(r.stdout.trim())).toHaveLength(120);
+      expect(r.stderr.trim()).toBe("Showing 1–120 of 120 open issues.");
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("a complete short list also prints the total", async () => {
+    const api = await startFakeApi({ listRows: 43 });
+    try {
+      const r = await runCliAsync(["issues", "list"], env(api.baseUrl));
+      expect(r.status).toBe(0);
+      expect(JSON.parse(r.stdout.trim())).toHaveLength(43);
+      expect(r.stderr.trim()).toBe("Showing 1–43 of 43 open issues.");
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("an offset past the end is an empty page, not an error", async () => {
+    const api = await startFakeApi({ listRows: 120 });
+    try {
+      const r = await runCliAsync(["issues", "list", "--json", "--offset", "200"], env(api.baseUrl));
+      expect(r.status).toBe(0);
+      expect(JSON.parse(r.stdout.trim())).toEqual([]);
+      expect(r.stderr.trim()).toBe("Showing none of 120 open issues: --offset 200 is past the end.");
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("no issues at all", async () => {
+    const api = await startFakeApi({ listRows: 0 });
+    try {
+      const r = await runCliAsync(["issues", "list", "--json", "--status", "closed"], env(api.baseUrl));
+      expect(r.status).toBe(0);
+      expect(JSON.parse(r.stdout.trim())).toEqual([]);
+      expect(r.stderr.trim()).toBe("No closed issues.");
+    } finally {
+      api.stop();
+    }
+  });
+
+  test("a server that gives no total gets no line", async () => {
+    // The default fake sends no Content-Range, like a proxy that strips it.
+    const api = await startFakeApi();
+    try {
+      const r = await runCliAsync(["issues", "list", "--json"], env(api.baseUrl));
+      expect(r.status).toBe(0);
+      expect(JSON.parse(r.stdout.trim())).toHaveLength(2);
+      expect(r.stderr).not.toContain("Showing");
     } finally {
       api.stop();
     }

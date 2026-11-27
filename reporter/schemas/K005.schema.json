@@ -56,7 +56,114 @@
       "properties": {
         "queryid": { "type": "string" },
         "total_wal_bytes": { "type": "number" },
-        "hourly_wal_bytes": { "$ref": "#/$defs/hourlyNumbers" }
+        "hourly_wal_bytes": { "$ref": "#/$defs/hourlyNumbers" },
+        "calls": { "type": "number" },
+        "exec_time_ms": { "type": "number" },
+        "rows": { "type": "number" },
+        "shared_blks_hit_bytes": { "type": "number" },
+        "shared_blks_read_bytes": { "type": "number" },
+        "wal_bytes": { "type": "number" },
+        "temp_bytes_written": { "type": "number" },
+        "wal_fpi": { "type": "number" },
+        "wal_records": { "type": "number" },
+        "query_text": { "type": "string" },
+        "is_monitoring": { "type": "boolean" },
+        "relations": { "type": "array", "items": { "type": "string" }, "maxItems": 3 }
+      }
+    },
+    "exportRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["top_n_per_database", "ranked_by", "min_calls", "min_exec_time_ms", "interval_seconds"],
+      "properties": {
+        "top_n_per_database": { "type": "integer" },
+        "ranked_by": { "type": "string" },
+        "min_calls": { "type": "integer" },
+        "min_exec_time_ms": { "type": "number" },
+        "interval_seconds": { "type": "integer" }
+      }
+    },
+    "counterHours": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end", "total", "hourly"],
+      "properties": {
+        "start": { "type": "string" },
+        "end": { "type": "string" },
+        "total": { "type": "number" },
+        "hourly": { "$ref": "#/$defs/hourlyNumbers" },
+        "peak_per_s": { "type": "number" },
+        "peak_at": { "type": "string" },
+        "peak_15m": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["bytes", "seconds", "end"],
+          "properties": { "bytes": { "type": "number" }, "seconds": { "type": "integer" }, "end": { "type": "string" } }
+        }
+      }
+    },
+    "gaugeEnds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end", "first", "last", "max", "max_at"],
+      "properties": {
+        "start": { "type": "string" },
+        "end": { "type": "string" },
+        "first": { "type": "number" },
+        "last": { "type": "number" },
+        "max": { "type": "number" },
+        "max_at": { "type": "string" }
+      }
+    },
+    "setting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["setting", "unit", "context"],
+      "properties": {
+        "setting": { "type": "string" },
+        "unit": { "type": "string" },
+        "context": { "type": "string" }
+      }
+    },
+    "slot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slot_name", "slot_type", "active", "wal_status"],
+      "properties": {
+        "slot_name": { "type": "string" },
+        "slot_type": { "type": "string" },
+        "active": { "type": "boolean" },
+        "wal_status": { "type": "string" },
+        "retained_bytes": { "type": "number" }
+      }
+    },
+    "index": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "bytes", "unique", "primary"],
+      "properties": {
+        "name": { "type": "string" },
+        "bytes": { "type": "number" },
+        "unique": { "type": "boolean" },
+        "primary": { "type": "boolean" },
+        "predicate": { "type": "string" },
+        "scans": { "type": "number" }
+      }
+    },
+    "table": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["database", "schema", "table", "updates"],
+      "properties": {
+        "database": { "type": "string" },
+        "schema": { "type": "string" },
+        "table": { "type": "string" },
+        "updates": { "type": "number" },
+        "hot_updates": { "type": "number" },
+        "inserts": { "type": "number" },
+        "deletes": { "type": "number" },
+        "total_bytes": { "type": "number" },
+        "indexes": { "type": "array", "items": { "$ref": "#/$defs/index" } }
       }
     },
     "summary": {
@@ -78,7 +185,17 @@
         "total_wal_bytes_other": { "type": "number" },
         "time_range_hours": { "type": "integer" },
         "hourly_timestamps": { "$ref": "#/$defs/timeline" },
-        "limit": { "type": "integer" }
+        "limit": { "type": "integer" },
+        "window_start": { "type": "string" },
+        "window_end": { "type": "string" },
+        "window_seconds": { "type": "integer" },
+        "export_rule": { "$ref": "#/$defs/exportRule" },
+        "total_calls": { "type": "number" },
+        "statements_exported_max": { "type": "integer" },
+        "statements_reset_max": { "type": "integer" },
+        "statements_reset_at": { "type": "string" },
+        "statements_wal_fpi": { "type": "number" },
+        "statements_wal_records": { "type": "number" }
       }
     },
     "dbEntry": {
@@ -103,10 +220,61 @@
         "available": { "type": "boolean" },
         "reason": { "type": "string" },
         "data": { "$ref": "#/$defs/data" },
-        "postgres_version": { "$ref": "#/$defs/postgresVersion" }
+        "postgres_version": { "$ref": "#/$defs/postgresVersion" },
+        "window_start": { "type": "string" },
+        "window_end": { "type": "string" },
+        "wal": { "$ref": "#/$defs/counterHours" },
+        "wal_error": { "type": "string" },
+        "database_sizes": { "type": "object", "additionalProperties": { "$ref": "#/$defs/gaugeEnds" } },
+        "database_sizes_error": { "type": "string" },
+        "checkpoints": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "timed": { "$ref": "#/$defs/counterHours" }, "requested": { "$ref": "#/$defs/counterHours" } }
+        },
+        "checkpoints_timed_error": { "type": "string" },
+        "checkpoints_requested_error": { "type": "string" },
+        "archiver": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "segment_bytes": { "type": "integer" },
+            "archived": { "$ref": "#/$defs/counterHours" },
+            "failed": { "$ref": "#/$defs/counterHours" },
+            "longest_gap_s": { "type": "number" },
+            "longest_gap_at": { "type": "string" }
+          }
+        },
+        "archiver_error": { "type": "string" },
+        "archiver_failed_error": { "type": "string" },
+        "archiver_gap_error": { "type": "string" },
+        "pg_wal": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["max", "max_at", "last"],
+          "properties": { "max": { "type": "number" }, "max_at": { "type": "string" }, "last": { "type": "number" } }
+        },
+        "pg_wal_error": { "type": "string" },
+        "wal_waits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["wal_samples", "all_samples", "wal_events"],
+          "properties": {
+            "wal_samples": { "type": "number" },
+            "all_samples": { "type": "number" },
+            "wal_events": { "type": "object", "additionalProperties": { "type": "number" } }
+          }
+        },
+        "wal_waits_error": { "type": "string" },
+        "tables": { "type": "array", "items": { "$ref": "#/$defs/table" } },
+        "tables_error": { "type": "string" },
+        "settings": { "type": "object", "additionalProperties": { "$ref": "#/$defs/setting" } },
+        "settings_error": { "type": "string" },
+        "slots": { "type": "array", "items": { "$ref": "#/$defs/slot" } },
+        "slots_error": { "type": "string" },
+        "indexes_error": { "type": "string" },
+        "node_error": { "type": "string" }
       }
     }
   }
 }
-
-

@@ -117,6 +117,16 @@
           "type": "object",
           "additionalProperties": { "$ref": "#/$defs/setting" }
         },
+        "settings_scope": {
+          "description": "What settings covers: every setting of these pg_settings categories (a regular expression, matched whole) and these names. Without it, settings is not known to hold all of them (an older file, or settings not read whole for this node).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["categories", "names"],
+          "properties": {
+            "categories": { "type": "string" },
+            "names": { "type": "array", "items": { "type": "string" } }
+          }
+        },
         "analysis": { "$ref": "#/$defs/analysis" },
         "activity": { "$ref": "#/$defs/activity" }
       }
@@ -180,6 +190,22 @@
             "available_min_pct": { "type": "number" },
             "available_min_at": { "type": "string" },
             "available_p5_pct": { "type": "number" }
+          }
+        },
+        "temp_files": {
+          "description": "Each database's temporary-file bytes and count over the window (databases monitored now, and any other with a reading in the window, except the excluded ones); <key>_error when monitoring has fewer than two readings at least 5 minutes apart, or did not answer (not known, never 0).",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["database"],
+            "properties": {
+              "database": { "type": "string" },
+              "bytes": { "type": "integer" },
+              "files": { "type": "integer" },
+              "bytes_error": { "type": "string" },
+              "files_error": { "type": "string" }
+            }
           }
         }
       }

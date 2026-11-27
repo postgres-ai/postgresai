@@ -3,10 +3,11 @@
 samples.jsonl.gz does not have (dev tool; the output is committed, the tests do not run this).
 
 The real demo box has no host metrics, no lock waits, no invalid indexes, no pg_stat_kcache, no
-stats_reset readings and no B-tree bloat bytes, so without these the reporter queries for them
-would compare empty with empty. It has no setting_normalized either (not stored before #340),
-which the dashboard compiler needs for the label columns of dashboard 05 panel 14. Same line
-format as samples.jsonl.gz (null = staleness marker); loaded next to it by mon_harness.build_store.
+stats_reset readings, no B-tree bloat bytes, no archiving, no deadlocks and no `up` series, so
+without these the reporter queries for them would compare empty with empty. It has no
+setting_normalized either (not stored before #340), which the dashboard compiler needs for the
+label columns of dashboard 05 panel 14. Same line format as samples.jsonl.gz (null = staleness
+marker); loaded next to it by mon_harness.build_store.
 
     python tests/reporter/mon_fixture/synthetic.py
 """
@@ -205,10 +206,28 @@ def settings_normalized():
         yield series("pgwatch_settings_setting_normalized", lab, ts, [normalized] * len(ts))
 
 
+def archiver_deadlocks_up():
+    """K005's archiver (the real slice has archive_mode off), a deadlock counter that rises and is
+    reset (the real one is all zeros), and the monitoring stack's `up` (the real slice has none):
+    one target of another cluster, which A005 and K006-K008 leave out, and one that went down."""
+    ts = grid(AT_MS - 2 * DAY, AT_MS, 300_000)
+    n, half = len(ts), len(ts) // 2
+    lab = dict(db_labels("target_database"), status="ok", wal_segment_size="16 MB")
+    yield series("pgwatch_archive_lag_archived_count", lab, ts, [1000 + 3 * i for i in range(n)])
+    yield series("pgwatch_archive_lag_failed_count", lab, ts, [0] * half + [2] * (n - half))
+    yield series("pgwatch_archive_lag_seconds_since_archive", lab, ts, [wave(i, 5, 290, 37) for i in range(n)])
+    yield series("pgwatch_db_stats_deadlocks", dict(db_labels("postgres"), env="deadlocks"), ts,
+                 [i // 20 for i in range(half)] + [(i - half) // 15 for i in range(half, n)])
+    for labels, values in (({"job": "pgwatch-prometheus", "instance": "pgwatch:9091"}, [1] * n),
+                           ({"job": "pgwatch-prometheus", "instance": "other:9091", "cluster": "other"}, [1] * n),
+                           ({"job": "self-node-exporter", "instance": "self-node-exporter:9100"}, [1] * (n - 3) + [0] * 3)):
+        yield series("up", labels, ts, values)
+
+
 def main():
     out = HERE / "synthetic.jsonl.gz"
     rows = [*host(), *resource_sizing_and_spills(), *stats_reset(), *lock_waits(), *invalid_indexes(), *kcache(), *btree_bloat_bytes(),
-            *settings_normalized()]
+            *settings_normalized(), *archiver_deadlocks_up()]
     with gzip.GzipFile(out, "wb", compresslevel=9, mtime=0) as f:
         for r in rows:
             f.write((json.dumps(r, sort_keys=True, separators=(",", ":")) + "\n").encode())

@@ -2,6 +2,9 @@ import { describe, test, expect, mock, beforeEach, afterEach, spyOn } from "bun:
 import { handleToolCall, interpretEscapes, type McpToolRequest } from "../lib/mcp-server";
 import * as config from "../lib/config";
 import * as issues from "../lib/issues";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
 
 // Save originals for restoration
 const originalFetch = globalThis.fetch;
@@ -181,6 +184,58 @@ describe("MCP Server", () => {
   });
 
   describe("list_issues tool", () => {
+    test("adds the page summary as a second block, keeping the JSON first", async () => {
+      const readConfigSpy = spyOn(config, "readConfig").mockReturnValue({
+        apiKey: "test-key",
+        baseUrl: null,
+        storageBaseUrl: null,
+        orgId: null,
+        defaultProject: null,
+        projectName: null,
+      });
+      let captured: { url: string; headers: Record<string, string> } = { url: "", headers: {} };
+      globalThis.fetch = mock((url: string, options: RequestInit) => {
+        captured = { url, headers: options.headers as Record<string, string> };
+        return Promise.resolve(
+          new Response(JSON.stringify([{ id: "issue-1", title: "First", status: 0 }]), {
+            status: 200,
+            headers: { "Content-Type": "application/json", "Content-Range": "0-0/120" },
+          })
+        );
+      }) as unknown as typeof fetch;
+
+      const response = await handleToolCall(createRequest("list_issues", { status: "open" }));
+
+      expect(response.isError).toBeUndefined();
+      expect(new URL(captured.url).searchParams.get("limit")).toBe("50");
+      expect(captured.headers.Prefer).toBe("return=representation, count=exact");
+      expect(JSON.parse(response.content[0].text)).toHaveLength(1);
+      expect(response.content[1].text).toBe(
+        "Showing 1–1 of 120 open issues. Use offset=1 for the next page, or limit=120 for all."
+      );
+
+      readConfigSpy.mockRestore();
+    });
+
+    test("no second block when the server gives no total", async () => {
+      const readConfigSpy = spyOn(config, "readConfig").mockReturnValue({
+        apiKey: "test-key",
+        baseUrl: null,
+        storageBaseUrl: null,
+        orgId: null,
+        defaultProject: null,
+        projectName: null,
+      });
+      globalThis.fetch = mock(() =>
+        Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }))
+      ) as unknown as typeof fetch;
+
+      const response = await handleToolCall(createRequest("list_issues"));
+
+      expect(response.content).toHaveLength(1);
+      readConfigSpy.mockRestore();
+    });
+
     test("successfully returns issues list as JSON", async () => {
       const mockIssues = [
         { id: "issue-1", title: "First Issue" },
@@ -853,6 +908,69 @@ describe("MCP Server", () => {
       expect(bodies[0]).toEqual({ p_id: "issue-1", p_is_hidden: true });
       expect(bodies[1]).toEqual({ p_id: "issue-1", p_is_hidden: false });
       expect("p_is_hidden" in bodies[2]).toBe(false);
+
+      readConfigSpy.mockRestore();
+    });
+
+    test("update_issue notify: requested on the first publish, reported in a second text item", async () => {
+      const readConfigSpy = spyOn(config, "readConfig").mockReturnValue(cfg);
+      const posts: Array<Record<string, unknown>> = [];
+      globalThis.fetch = mock((_url: string, options: RequestInit) => {
+        if ((options?.method ?? "GET") === "GET") {
+          return Promise.resolve(new Response(JSON.stringify([{ id: "issue-1", is_hidden: true, first_visible_at: null }]), { status: 200 }));
+        }
+        posts.push(JSON.parse(options.body as string));
+        return Promise.resolve(new Response(JSON.stringify({ id: "issue-1" }), { status: 200 }));
+      }) as unknown as typeof fetch;
+
+      const res = await handleToolCall(createRequest("update_issue", { issue_id: "issue-1", is_hidden: false, notify: true }));
+      expect(res.isError).toBeUndefined();
+      expect(posts[0]).toEqual({ p_id: "issue-1", p_is_hidden: false, p_notify: true });
+      expect(JSON.parse(res.content[0].text).notify).toEqual({ requested: true, reason: "first_publish" });
+      expect(res.content[1].text).toContain("Notifications requested");
+
+      readConfigSpy.mockRestore();
+    });
+
+    test("update_issue notify with attachments: a refused notify uploads nothing", async () => {
+      const readConfigSpy = spyOn(config, "readConfig").mockReturnValue(cfg);
+      const dir = mkdtempSync(join(tmpdir(), "mcp-notify-attach-"));
+      const file = join(dir, "pic.png");
+      writeFileSync(file, "PNGBYTES");
+      const writes: string[] = [];
+      globalThis.fetch = mock((url: string, options?: RequestInit) => {
+        const method = options?.method ?? "GET";
+        if (method === "GET" && String(url).includes("first_visible_at")) {
+          // A platform before notify support: unknown column.
+          return Promise.resolve(new Response(JSON.stringify({ code: "42703", message: "column issues.first_visible_at does not exist" }), { status: 400 }));
+        }
+        if (method !== "GET") writes.push(String(url));
+        return Promise.resolve(new Response(JSON.stringify([{ id: "issue-1", description: "d" }]), { status: 200 }));
+      }) as unknown as typeof fetch;
+
+      try {
+        const res = await handleToolCall(createRequest("update_issue", { issue_id: "issue-1", is_hidden: false, notify: true, attachments: [file] }));
+        expect(res.isError).toBe(true);
+        expect(getResponseText(res)).toContain("does not support notify on unhide yet");
+        // No upload and no update: the check runs first.
+        expect(writes).toEqual([]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+        readConfigSpy.mockRestore();
+      }
+    });
+
+    test("update_issue notify: refused when not a boolean or without is_hidden=false", async () => {
+      const readConfigSpy = spyOn(config, "readConfig").mockReturnValue(cfg);
+      const bodies = captureBodies();
+
+      const str = await handleToolCall(createRequest("update_issue", { issue_id: "issue-1", is_hidden: false, notify: "true" }));
+      expect(str.isError).toBe(true);
+      expect(getResponseText(str)).toBe("notify must be a boolean");
+      const noUnhide = await handleToolCall(createRequest("update_issue", { issue_id: "issue-1", title: "T", notify: true }));
+      expect(noUnhide.isError).toBe(true);
+      expect(getResponseText(noUnhide)).toContain("only with is_hidden=false");
+      expect(bodies).toHaveLength(0);
 
       readConfigSpy.mockRestore();
     });

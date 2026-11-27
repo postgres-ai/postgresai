@@ -170,6 +170,20 @@ function effectiveConfig(config: PgClientConfig): { ssl: unknown; host?: string 
 }
 
 /**
+ * The server asked for a password and none was given (no URL password, PGPASSWORD
+ * or ~/.pgpass entry): pg fails with "SASL: ... client password must be a string".
+ * Returns a clear error for that case, else null (#529).
+ */
+function noPasswordError(err: unknown): Error | null {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (!/client password must be a (non-empty )?string/i.test(msg)) return null;
+  return new Error(
+    "the server asks for a password, and none was given. " +
+    "Put it in PGPASSWORD (or --admin-password for prepare-db), in the connection string, or in ~/.pgpass."
+  );
+}
+
+/**
  * Connect to PostgreSQL with sslmode=prefer-like behavior.
  * If sslFallbackEnabled is true, tries SSL first, then falls back to non-SSL on failure.
  * `warn` gets the TLS warnings (default: stderr).
@@ -182,7 +196,18 @@ export async function connectWithSslFallback(
 ): Promise<{ client: PgClient; usedSsl: boolean }> {
   const tryConnect = async (config: PgClientConfig): Promise<PgClient> => {
     const client = new ClientClass({ ...config, connectionTimeoutMillis: 10_000 } as any);
-    await client.connect();
+    try {
+      await client.connect();
+    } catch (err) {
+      // pg rejects but keeps the socket open, and the server holds it until its
+      // authentication_timeout (60 s): close it now (#529).
+      try {
+        Promise.resolve(client.end?.()).catch(() => {});
+      } catch {
+        // A failing close must not replace the connect error.
+      }
+      throw noPasswordError(err) ?? err;
+    }
     // Admin connections run installer and checkup SQL. A database owner can put
     // functions in public (or the role's schema) that shadow pg_catalog built-ins
     // when the server's default search_path is used. Pin it before the first
@@ -680,6 +705,45 @@ export async function resolveMonitoringPassword(opts: {
   return { password: generateMonitoringPassword(), generated: true };
 }
 
+/** True when the monitoring role exists. No bind parameters: the Supabase client has none. */
+export async function monitoringRoleExists(
+  client: { query: (sql: string) => Promise<{ rows?: unknown[] }> },
+  monitoringUser: string,
+): Promise<boolean> {
+  const r = await client.query(
+    `select true as role_exists from pg_catalog.pg_roles where rolname = ${quoteLiteral(monitoringUser)}`
+  );
+  return (r.rows?.length ?? 0) > 0;
+}
+
+/**
+ * The monitoring password prepare-db uses (#529):
+ * - an explicit one (--password, PGAI_MON_PASSWORD) is set, on a new or an existing role;
+ * - --print-sql without one uses a placeholder (printed SQL redacts passwords anyway);
+ * - --reset-password without one generates a new one;
+ * - otherwise an existing role keeps its password, and a new role gets a generated one.
+ * keepExistingPassword: the role step creates a missing role but never alters a password.
+ * generated: a new password the caller must show (it is set only on a new role).
+ */
+export async function resolvePrepareDbPassword(opts: {
+  passwordFlag?: string;
+  passwordEnv?: string;
+  monitoringUser: string;
+  resetPassword?: boolean;
+  printSql?: boolean;
+  roleExists: () => Promise<boolean>;
+}): Promise<{ password: string; generated: boolean; keepExistingPassword: boolean }> {
+  const explicit = (opts.passwordFlag || "").trim() || (opts.passwordEnv || "").trim();
+  if (explicit) return { password: explicit, generated: false, keepExistingPassword: false };
+
+  const keepExistingPassword = !opts.resetPassword && (await opts.roleExists());
+  if (opts.printSql) return { password: "<redacted>", generated: false, keepExistingPassword };
+  // An existing role keeps its password. The generated one is used only if the
+  // role is dropped between this check and the role step; it is not shown.
+  const { password } = await resolveMonitoringPassword({ monitoringUser: opts.monitoringUser });
+  return { password, generated: !keepExistingPassword, keepExistingPassword };
+}
+
 export async function buildInitPlan(params: {
   database: string;
   monitoringUser?: string;
@@ -691,6 +755,13 @@ export async function buildInitPlan(params: {
   provider?: DbProvider;
   /** Create the role if missing, but never change an existing role's password. */
   keepExistingPassword?: boolean;
+  /**
+   * prepare-db only (#529): what the role step must find, as checked before the plan.
+   * "exists": the role must still exist; its password is kept, nothing is created.
+   * "new": the role must not exist yet; it is created with this password.
+   * Otherwise the step fails and nothing is created or adopted.
+   */
+  roleExpectation?: "exists" | "new";
 }): Promise<InitPlan> {
   // NOTE: kept async for API stability / potential future async template loading.
   const monitoringUser = params.monitoringUser || DEFAULT_MONITORING_USER;
@@ -730,7 +801,19 @@ export async function buildInitPlan(params: {
     // - create role if missing (another session may create it concurrently: duplicate_object, or
     //   unique_violation when its CREATE raced this one past the exists check),
     // - then ALTER ROLE to ensure the password is set to the desired value.
-    const roleStmt = `do ${doQuote} begin
+    const roleStmt = params.roleExpectation === "exists"
+      ? `do ${doQuote} begin
+  if not exists (select 1 from pg_catalog.pg_roles where rolname = ${qRoleNameLit}) then
+    raise exception 'monitoring role % was dropped during prepare-db; re-run prepare-db', ${qRoleNameLit};
+  end if;
+end ${doQuote};`
+      : params.roleExpectation === "new"
+      ? `do ${doQuote} begin
+  create user ${qRole} with password ${qPwVerifier};
+exception when duplicate_object or unique_violation then
+  raise exception 'monitoring role % was created by another session during prepare-db; re-run prepare-db', ${qRoleNameLit};
+end ${doQuote};`
+      : `do ${doQuote} begin
   if not exists (select 1 from pg_catalog.pg_roles where rolname = ${qRoleNameLit}) then
     begin
       create user ${qRole} with password ${qPwVerifier};
@@ -1165,6 +1248,16 @@ export async function verifyInitSetup(params: {
       if (!viewPrivRes.rows?.[0]?.ok) {
         missingRequired.push("SELECT on view postgres_ai.pg_statistic");
       }
+      // The view reads this function as the caller (#525); older views do not.
+      const fnPrivRes = await params.client.query(`
+        select case
+          when to_regprocedure('postgres_ai.pg_statistic_rows()') is null then true
+          else has_function_privilege($1, 'postgres_ai.pg_statistic_rows()', 'EXECUTE')
+        end as ok
+      `, [role]);
+      if (!fnPrivRes.rows?.[0]?.ok) {
+        missingRequired.push("EXECUTE on function postgres_ai.pg_statistic_rows()");
+      }
     }
 
     const schemaUsageRes = await params.client.query(
@@ -1355,7 +1448,10 @@ export async function checkCurrentUserPermissions(
           when to_regnamespace('postgres_ai') is null then null
           when not has_schema_privilege(current_user, 'postgres_ai', 'USAGE') then null
           when to_regclass('postgres_ai.pg_statistic') is null then null
-          else has_table_privilege(current_user, 'postgres_ai.pg_statistic', 'select')
+          -- The view reads pg_statistic_rows() as the caller (#525).
+          when not has_table_privilege(current_user, 'postgres_ai.pg_statistic', 'select') then false
+          when to_regprocedure('postgres_ai.pg_statistic_rows()') is null then true
+          else has_function_privilege(current_user, 'postgres_ai.pg_statistic_rows()', 'EXECUTE')
         end as granted
     )
     select
@@ -1379,7 +1475,7 @@ export async function checkCurrentUserPermissions(
         when permission_name = 'postgres_ai.pg_statistic view exists' and granted = false then
           '-- create postgres_ai.pg_statistic view (see setup script)'
         when permission_name = 'select on postgres_ai.pg_statistic' and granted = false then
-          format('grant select on postgres_ai.pg_statistic to %I;', current_user)
+          format('grant select on postgres_ai.pg_statistic to %1$I; grant execute on function postgres_ai.pg_statistic_rows() to %1$I;', current_user)
         else null
       end as fix_command
     from permission_checks

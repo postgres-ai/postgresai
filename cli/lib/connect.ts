@@ -72,7 +72,7 @@ export interface ConnectResult {
   location_reason_text?: string;
   /** Not deployed for want of --yes: where else the box can run, each available cloud's locations. */
   choices?: Record<string, string[]>;
-  /** The project's Health Matrix in the console. */
+  /** The project's Database health in the console. */
   health_url?: string;
   dashboard_url?: string | null;
   host_metrics?: boolean;
@@ -171,7 +171,7 @@ export interface Database {
   database?: string | null;
   provider: string;
   status: string | null;
-  /** The project's Health Matrix in the console (added by platformDeps, not the platform). */
+  /** The project's Database health in the console (added by platformDeps, not the platform). */
   health_url?: string;
   dashboard_url: string | null;
   host_metrics: boolean;
@@ -217,7 +217,7 @@ type Warn = (message: string) => void;
 export interface ConnectDeps {
   verifyTls?(url: string): Promise<void>;
   list(): Promise<Database[]>;
-  /** A row with its console links, for the result shown: the Health Matrix, and Grafana through the PostgresAI sign-in. */
+  /** A row with its console links, for the result shown: Database health, and Grafana through the PostgresAI sign-in. */
   links?(row: Database): Promise<Database>;
   create(body: Record<string, string | boolean | number>): Promise<{ id: string; name: string; status: string; error?: string }>;
   /** `check`: only whether the URL can work, nothing changed ({ checked: true } or what to do first). */
@@ -741,12 +741,12 @@ function personLines(r: ConnectResult): string[] {
     case "ready":
       return [
         `Monitoring for ${who} is ready.`,
-        ...(r.health_url ? [`  Health Matrix: ${r.health_url}`] : []),
-        ...(r.dashboard_url ? [`  Grafana:       ${r.dashboard_url}`] : []),
-        ...(r.price ? [`  Price:         ${r.price}`] : []),
-        ...(r.cloud ? [`  Runs on:       ${cloudWord(r.cloud)}, ${r.location}`] : []),
-        ...(r.egress_ip ? [`  Connects from: ${r.egress_ip}`] : []),
-        ...(r.provider === "rds" && r.host_metrics ? ["  Host metrics:  on (CPU, memory, disk, IOPS)"] : []),
+        ...(r.health_url ? [`  Database health: ${r.health_url}`] : []),
+        ...(r.dashboard_url ? [`  Grafana:         ${r.dashboard_url}`] : []),
+        ...(r.price ? [`  Price:           ${r.price}`] : []),
+        ...(r.cloud ? [`  Runs on:         ${cloudWord(r.cloud)}, ${r.location}`] : []),
+        ...(r.egress_ip ? [`  Connects from:   ${r.egress_ip}`] : []),
+        ...(r.provider === "rds" && r.host_metrics ? ["  Host metrics:    on (CPU, memory, disk, IOPS)"] : []),
         ...(!r.health_url && !r.dashboard_url && r.next && r.next !== "none" ? [`Next: ${r.next}`] : []),
         ...(extra && (r.health_url || r.dashboard_url) ? [`Note: ${extra}`] : []),
       ];
@@ -2552,7 +2552,7 @@ async function openConnection(url: string, opts: PrepareOptions) {
 }
 
 /** Drops the monitoring role and what it was granted in this database; false when the server refuses. */
-async function dropMonitoringRole(client: PgClient, role: string): Promise<boolean> {
+export async function dropMonitoringRole(client: { query: (sql: string) => Promise<unknown> }, role: string): Promise<boolean> {
   const q = quoteIdent(role);
   // Alone first: a role with no grants yet needs no DROP OWNED, which a CREATEROLE admin may not run.
   for (const sql of [`drop role ${q}`, `drop owned by ${q}; drop role ${q}`]) {
@@ -2564,9 +2564,10 @@ async function dropMonitoringRole(client: PgClient, role: string): Promise<boole
 /** What the plan grants (pg_monitor and pg_read_all_stats), and what pg_monitor itself is a member of. */
 const MONITORING_GROUPS = ["pg_monitor", "pg_read_all_stats", "pg_read_all_settings", "pg_stat_scan_tables"];
 
-/** The functions the plan grants EXECUTE on (sql/04, sql/05, sql/06), as schema.name(argument types). */
+/** The functions the plan grants EXECUTE on (sql/03, sql/04, sql/05, sql/06), as schema.name(argument types). */
 const MONITORING_FUNCTIONS = ["pg_catalog.pg_stat_file(text)", "pg_catalog.pg_stat_file(text, boolean)", "pg_catalog.pg_ls_dir(text)",
-  "pg_catalog.pg_ls_dir(text, boolean, boolean)", "rds_tools.pg_ls_multixactdir()", "postgres_ai.table_describe(text)"];
+  "pg_catalog.pg_ls_dir(text, boolean, boolean)", "rds_tools.pg_ls_multixactdir()", "postgres_ai.table_describe(text)",
+  "postgres_ai.pg_statistic_rows()"];
 
 /** Undoes a `generated` prepareDatabase over the same admin URL: drops the role that run created. */
 export async function unprepareDatabase(url: string, opts: PrepareOptions = {}): Promise<boolean> {
@@ -2818,9 +2819,9 @@ export function disconnectBilling(reply: unknown): string | undefined {
   return undefined;
 }
 
-/** The project's Health Matrix: <console>/<org alias>/projects/<project alias>/health. */
-export function healthMatrixUrl(uiBaseUrl: string, orgAlias: string, projectAlias: string): string {
-  return `${uiBaseUrl.replace(/\/+$/, "")}/${encodeURIComponent(orgAlias)}/projects/${encodeURIComponent(projectAlias)}/health`;
+/** The project's Database health, the console's default project view: <console>/<org alias>/projects/<project alias>/health-preview. */
+export function databaseHealthUrl(uiBaseUrl: string, orgAlias: string, projectAlias: string): string {
+  return `${uiBaseUrl.replace(/\/+$/, "")}/${encodeURIComponent(orgAlias)}/projects/${encodeURIComponent(projectAlias)}/health-preview`;
 }
 
 /** The box's Grafana through its PostgresAI sign-in (generic OAuth), landing where the address points. */
@@ -2850,7 +2851,7 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
     const [org, list] = await Promise.all([orgAlias, projects]);
     const project = list.find((x) => x.monitoring_instance_ids?.includes(row.id)) ?? list.find((x) => x.name === row.name);
     if (!project) projects = undefined;
-    return org && project?.alias ? healthMatrixUrl(p.uiBaseUrl, org, project.alias) : undefined;
+    return org && project?.alias ? databaseHealthUrl(p.uiBaseUrl, org, project.alias) : undefined;
   };
   const withLinks = async (row: Database): Promise<Database> => {
     // A link that cannot be looked up is left out: it never fails the list.
@@ -2858,7 +2859,7 @@ export function platformDeps(p: { apiKey: string; apiBaseUrl: string; uiBaseUrl:
       orgAlias = projects = undefined;
       return undefined;
     });
-    // Ordered for a person reading it: the Health Matrix, then Grafana.
+    // Ordered for a person reading it: Database health, then Grafana.
     const { dashboard_url, host_metrics, host_metrics_source, ...rest } = row;
     return { ...rest, ...(health_url ? { health_url } : {}), dashboard_url: grafanaOAuthUrl(dashboard_url), host_metrics,
       ...(host_metrics_source !== undefined ? { host_metrics_source } : {}) } as Database;

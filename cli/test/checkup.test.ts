@@ -3969,7 +3969,7 @@ describe("checkup-summary", () => {
     };
     const result = summary.generateCheckSummary("D004", report);
     expect(result.status).toBe("info");
-    expect(result.message).toBe("2 pg_stat_statements settings collected");
+    expect(result.message).toBe("2 settings collected");
   });
 
   test("generateCheckSummary for F001 (autovacuum) with no findings is healthy", () => {
@@ -4176,7 +4176,7 @@ describe("checkup-summary", () => {
     };
     const result = summary.generateCheckSummary("D004", report);
     expect(result.status).toBe("info");
-    expect(result.message).toBe("No pg_stat_statements settings found");
+    expect(result.message).toBe("No settings found");
   });
 
   test("generateCheckSummary for F001 with no settings", () => {

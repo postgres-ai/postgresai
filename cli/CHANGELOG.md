@@ -4,6 +4,14 @@
 
 ### Added
 
+- `pgai issues update <id> --no-hidden --notify` (MCP `update_issue` with `is_hidden: false, notify: true`) makes
+  a hidden issue visible and sends the new-issue email and Slack post, like "Make visible and notify" in the Console
+  (https://gitlab.com/postgres-ai/postgresai/-/work_items/520). The platform sends them only the first time an
+  issue becomes visible, so the CLI reads the issue first and says on stderr whether they were requested or why
+  nothing was sent (visible before, or already visible); `--json` also carries `notify`. `--notify` needs
+  `--no-hidden`; a platform without notify support refuses it with a message and nothing is unhidden. Without
+  `--notify` an unhide stays silent, as before. PostgresAI staff only.
+
 - `pgai reports list` tells checkup reports from Database health collections
   (https://gitlab.com/postgres-ai/postgresai/-/work_items/504): in a terminal each report prints as `id`, `project`,
   `type` (`Checkup`, or `Database health` with its period, e.g. `week 2026-W46 (Nov 9–15) (in progress)`), `created`
@@ -48,6 +56,19 @@
 
 ### Changed
 
+- JSON contract 1.3.0: in full (monitoring) mode, a checkup node result without data carries
+  `available` (false: not collected yet, the query failed, or nothing found where those look the
+  same; true: checked, nothing found) and a plain `reason`. Express mode does not emit them.
+  Additive; the schemas accept both as optional.
+- `pgai issues list` returns 50 issues by default (was 20) and prints the total on stderr on every call, so a
+  short page is no longer mistaken for the whole list: `Showing 1–43 of 43 open issues.`, or `Showing 1–50 of 120
+  open issues. Use --offset 50 for the next page, or --limit 120 for all.` stdout is unchanged (the same JSON array).
+  An `--offset` past the end prints `[]` and says so. The MCP `list_issues` tool also defaults to 50 and returns the
+  same line as a second text block. `--limit` goes up to 500, the most the API returns per request.
+- `pgai mon deploy`, `pgai mon instances list` / `watch` (`status`) and the MCP `deploy_monitoring` tool link to the
+  project's Database health, the console's default project view (`<console>/<org>/projects/<project>/health-preview`),
+  instead of its Health Matrix (https://gitlab.com/postgres-ai/postgresai/-/work_items/522). `health_url` keeps its
+  name; the terminal label is now `Database health:`.
 - A publicly accessible RDS is monitored directly (as `--provider generic`), not handed off to the console. There the
   RDS master user (a member of `rds_superuser`) counts as an admin before `pg_stat_statements` is installed, as it can
   create it.
@@ -74,6 +95,27 @@
   and grants.
 
 ### Fixed
+
+- First-install fixes (https://gitlab.com/postgres-ai/postgresai/-/work_items/529):
+  - `checkup --no-upload` no longer needs an organization when a global token is stored.
+  - Re-running `prepare-db` without a monitoring password keeps an existing role's password; only `--reset-password`
+    or an explicit `--password` / `PGAI_MON_PASSWORD` changes it. `--json` output has `passwordChanged`.
+  - **Breaking:** a generated monitoring password is no longer in non-TTY `--json` output unless `--print-password`;
+    without it the run fails (exit 1, JSON error) before any change, as the text mode does. Scripts that read
+    `generatedPassword` from a piped `prepare-db --json` must pass `--print-password` or give a password.
+  - When `prepare-db` creates the role with a generated password and a later step fails, it drops the role again,
+    so a re-run starts clean; if the drop fails, the JSON error carries `generatedPassword` and `passwordChanged`.
+    The role step fails instead of creating or adopting a role that appeared or disappeared during the run.
+  - `prepare-db <url> --print-sql` works without a monitoring password in non-TTY runs (the password is redacted).
+  - A missing admin password fails at once with a clear message, not after ~60 s with a SASL error.
+  - `checkup --json` prints `{"success": false, "error": {...}}` on stdout when the output directory, API key,
+    connection, permissions, check ID or upload fails before any report; exit codes are in `checkup --help` and the
+    README.
+  - `checkup --help` shows titles for F009 and I001.
+  - F003 no longer calls a table past its insert trigger "append-only", and says "being worked" only when an
+    autovacuum worker is busy and no flagged table has autovacuum disabled. H002's summary notes usage stats younger
+    than 7 days (since a stats reset or the server start). D004's summary counts the settings in the report
+    ("N settings collected").
 
 - `postgres_ai.table_describe` no longer lists every NOT NULL column a second time under Constraints on PostgreSQL 18
   (as `n:` lines); Columns already shows `NOT NULL`, so the output now matches earlier versions
