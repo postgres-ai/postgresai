@@ -38,7 +38,7 @@ __version__ = "1.0.2"
 #
 # MUST stay identical to CONTRACT_VERSION in cli/lib/checkup.ts. A cross-language
 # test (cli/test/contract-version.test.ts) asserts the two sources cannot drift.
-CONTRACT_VERSION = "1.3.0"
+CONTRACT_VERSION = "1.4.0"
 
 import requests
 import json
@@ -3314,7 +3314,7 @@ class PostgresReportGenerator:
             key = (index.get('schema_name', ''), index.get('table_name', ''))
             tables.setdefault(key, {"schema_name": key[0], "table_name": key[1]})
         rows = list(tables.values())
-        self._f004_add_table_facts(rows, cluster, node_name, db_name)
+        self._f004_add_table_facts(rows, cluster, node_name, db_name, window_start=False)
         for row in rows:  # those two are the table's heap estimate: F004's, not this report's
             row.pop("bloat_size_min_in_window_bytes", None)
             row.pop("bloat_size_max_in_window_bytes", None)
@@ -3893,14 +3893,15 @@ class PostgresReportGenerator:
         return out
 
     def _f004_add_table_facts(self, tables: List[Dict[str, Any]], cluster: str, node_name: str,
-                              db_name: str) -> None:
+                              db_name: str, window_start: bool = True) -> None:
         """Per bloated table, what tells dead tuples from free space and why
         autovacuum did not clean them (protocols F004-O2, C2): live and dead
         tuples, the table's own autovacuum trigger, vacuum runs and writes over
         F004_WINDOW, seconds since its last vacuum (manual or auto), whether
         autovacuum is off on it, its heap and TOAST size, and the estimate's
-        lowest and highest value over the window. A key is null when its series
-        is missing (pgwatch table_stats covers the top 100 tables per database)."""
+        lowest and highest value over the window, and (``window_start``) the estimate at the
+        window's start. A key is null when its series is missing (pgwatch table_stats
+        covers the top 100 tables per database)."""
         if not tables:
             return
         _esc = self._escape_promql_label
@@ -3952,6 +3953,7 @@ class PostgresReportGenerator:
                 f'max_over_time(pgwatch_pg_table_bloat_bloat_size{{{sel}}}[{win}])', bloat),
         }
         since = self._f004_series(last("seconds_since_last_vacuum", "min"), *stats)  # the latest vacuum
+        start = self._f004_window_start(cluster, node_name, db_name) if window_start else {}
         off = get(last("no_autovacuum"), stats)
         sizes = facts["table_size_bytes"]
         for table in tables:
@@ -3973,6 +3975,27 @@ class PostgresReportGenerator:
             # only where table_stats covers the table (a size row), else unknown.
             table["vacuum_recorded"] = (key in since) if since is not None and key in sizes else None
             table["autovacuum_disabled"] = bool(off[key]) if key in off else None
+            if window_start:
+                value, at = start.get(key, (None, None)) if key != ("", "") else (None, None)
+                table["bloat_size_at_window_start_bytes"], table["bloat_size_at_window_start_at"] = value, at
+
+    def _f004_window_start(self, cluster: str, node_name: str, db_name: str) -> Dict[tuple, tuple]:
+        """Per (schema, table): (estimate, its UTC time) at the oldest daily reading over
+        F004_HISTORY_DAYS (protocols F004-O1: the week-earlier estimate). A box or table younger
+        than the window gives its own oldest day; a failed day is skipped. Merged per table
+        (labels such as sys_id can change), with the history's constructs, which v3 and v4 run."""
+        _esc = self._escape_promql_label
+        sel = f'cluster="{_esc(cluster)}", node_name="{_esc(node_name)}", datname="{_esc(db_name)}"'
+        now = time.time()  # instant queries evaluate at now
+        start: Dict[tuple, tuple] = {}
+        for days in range(self.F004_HISTORY_DAYS, -1, -1):  # oldest first: the first value per table wins
+            offset = f" offset {days}d" if days else ""
+            values = self._f004_series(
+                f'max by (schemaname, tblname) (last_over_time(pgwatch_pg_table_bloat_bloat_size{{{sel}}}[3h]{offset}))',
+                'schemaname', 'tblname') or {}
+            for key, value in values.items():
+                start.setdefault(key, (int(round(value)), self.format_epoch_timestamp(now - days * 86400)))
+        return start
 
     def _f004_autovacuum_settings(self, cluster: str, node_name: str) -> Dict[str, float]:
         """The server settings behind each table's autovacuum trigger (threshold + scale

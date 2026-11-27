@@ -8,6 +8,8 @@ counters and last autovacuum of the top tables, F004-C2 the kind of space).
 
 from __future__ import annotations
 
+import re
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 import pytest
@@ -245,3 +247,106 @@ def test_f004_window_cap_zeroes_both_run_counts_only_for_an_old_vacuum(monkeypat
     victim, orders = _db(_gen(monkeypatch, responses).generate_f004_heap_bloat_report("local", "node-1"))["bloated_tables"]
     assert victim["vacuum_runs_in_window"] == 2  # vacuumed an hour ago: the count stays
     assert (orders["vacuum_runs_in_window"], orders["autovacuum_runs_in_window"]) == (0, 0)
+
+
+# --- The estimate at the window's start per table (protocols F004-O1, postgresai#535) ---
+
+START_PREFIX = "max by (schemaname, tblname) (last_over_time(pgwatch_pg_table_bloat_bloat_size{"
+
+
+def _with_days(monkeypatch: pytest.MonkeyPatch, days: Dict[int, Any]) -> PostgresReportGenerator:
+    """RESPONSES, plus the per-table daily reading N days ago (None: the query failed)."""
+    gen = _gen(monkeypatch, RESPONSES)
+    answer = gen.query_instant
+
+    def fake(query: str) -> Dict[str, Any]:
+        if query.startswith(START_PREFIX):
+            n = int(re.search(r"offset (\d+)d\)\)$", query).group(1)) if " offset " in query else 0
+            rows = days.get(n, [])
+            return {"status": "error"} if rows is None else {"status": "success", "data": {"result": rows}}
+        return answer(query)
+
+    monkeypatch.setattr(gen, "query_instant", fake)
+    return gen
+
+
+def _start(report: Dict[str, Any]) -> Dict[str, tuple]:
+    return {t["table_name"]: (t["bloat_size_at_window_start_bytes"], t["bloat_size_at_window_start_at"])
+            for t in _db(report)["bloated_tables"]}
+
+
+def _days_ago(at: str) -> int:
+    return round((datetime.now(timezone.utc) - datetime.fromisoformat(at)).total_seconds() / 86400)
+
+
+@pytest.mark.unit
+def test_f004_start_is_the_reading_a_week_earlier(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A box with a week of readings: the estimate 7 days ago, with that day's time."""
+    days = {n: _bloat([("public", "victim", 30_000_000 + n), ("Sales", "orders", 32_768)]) for n in range(8)}
+    report = _with_days(monkeypatch, days).generate_f004_heap_bloat_report("local", "node-1")
+    validate_report(report)
+    start = _start(report)
+    assert start["victim"][0] == 30_000_007 and _days_ago(start["victim"][1]) == 7
+    assert start["orders"][0] == 32_768 and _days_ago(start["orders"][1]) == 7
+
+
+@pytest.mark.unit
+def test_f004_start_on_a_young_box_or_table_is_its_own_oldest_day(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A box younger than the window starts at its first day; a table that appeared later at its own."""
+    days = {0: _bloat([("public", "victim", 38_000_000), ("Sales", "orders", 32_768)]),
+            1: _bloat([("public", "victim", 36_000_000), ("Sales", "orders", 32_768)]),
+            2: _bloat([("public", "victim", 35_000_000)])}
+    start = _start(_with_days(monkeypatch, days).generate_f004_heap_bloat_report("local", "node-1"))
+    assert start["victim"][0] == 35_000_000 and _days_ago(start["victim"][1]) == 2
+    assert start["orders"][0] == 32_768 and _days_ago(start["orders"][1]) == 1
+
+
+@pytest.mark.unit
+def test_f004_start_skips_a_failed_day_and_is_null_without_any(monkeypatch: pytest.MonkeyPatch) -> None:
+    days = {7: None, 6: _bloat([("public", "victim", 31_000_000)]), 0: _bloat([("public", "victim", 38_000_000)])}
+    start = _start(_with_days(monkeypatch, days).generate_f004_heap_bloat_report("local", "node-1"))
+    assert start["victim"][0] == 31_000_000 and _days_ago(start["victim"][1]) == 6
+    assert start["orders"] == (None, None)
+    report = _with_days(monkeypatch, {n: None for n in range(8)}).generate_f004_heap_bloat_report("local", "node-1")
+    validate_report(report)
+    assert set(_start(report).values()) == {(None, None)}
+
+
+@pytest.mark.unit
+def test_f004_start_of_the_other_row_is_null(monkeypatch: pytest.MonkeyPatch) -> None:
+    """'$other$' sums the tables after pgwatch's top 100: no start of its own."""
+    days = {n: _bloat([("public", "victim", 30_000_000), ("$other$", "$other$", 1000)]) for n in range(8)}
+    gen = _with_days(monkeypatch, days)
+    responses = dict(RESPONSES)
+    responses["pgwatch_pg_table_bloat_bloat_size"] = _bloat(BLOAT + [("$other$", "$other$", 1000)])
+    answer = _gen(monkeypatch, responses).query_instant
+    inner = gen.query_instant
+    monkeypatch.setattr(gen, "query_instant", lambda q: inner(q) if q.startswith(START_PREFIX) else answer(q))
+    start = _start(gen.generate_f004_heap_bloat_report("local", "node-1"))
+    assert start["$other$"] == (None, None) and start["victim"][0] == 30_000_000
+
+
+@pytest.mark.unit
+def test_f004_start_query_merges_series_per_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One value per table even when its labels (e.g. sys_id) changed in the window; the same
+    constructs as the history's (offset, last_over_time), which the v4 promsql also runs."""
+    gen = _with_days(monkeypatch, {})
+    issued: List[str] = []
+    inner = gen.query_instant
+    monkeypatch.setattr(gen, "query_instant", lambda q: issued.append(q) or inner(q))
+    gen.generate_f004_heap_bloat_report("local", "node-1")
+    start = [q for q in issued if q.startswith(START_PREFIX)]
+    assert len(start) == 8 and all("first_over_time" not in q for q in start), start
+
+
+@pytest.mark.unit
+def test_f005_does_not_ask_for_the_heap_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    """F005 reuses the F004 table facts; the heap estimate's start is F004's, not asked there."""
+    gen = _gen(monkeypatch, RESPONSES)
+    issued: List[str] = []
+    inner = gen.query_instant
+    monkeypatch.setattr(gen, "query_instant", lambda q: issued.append(q) or inner(q))
+    rows = gen._f005_table_facts([{"schema_name": "public", "table_name": "victim", "index_name": "i",
+                                   "bloat_size": 1}], "local", "node-1", DB)
+    assert not any(q.startswith(START_PREFIX) for q in issued)
+    assert "bloat_size_at_window_start_bytes" not in rows[0]

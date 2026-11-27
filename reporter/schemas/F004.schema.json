@@ -88,6 +88,8 @@
         "table_size_max_in_window_bytes": { "type": ["integer", "null"] },
         "bloat_size_min_in_window_bytes": { "type": ["integer", "null"] },
         "bloat_size_max_in_window_bytes": { "type": ["integer", "null"] },
+        "bloat_size_at_window_start_bytes": { "type": ["integer", "null"] },
+        "bloat_size_at_window_start_at": { "type": ["string", "null"] },
         "seconds_since_last_vacuum": { "type": ["integer", "null"] },
         "vacuum_recorded": { "type": ["boolean", "null"] },
         "autovacuum_disabled": { "type": ["boolean", "null"] }

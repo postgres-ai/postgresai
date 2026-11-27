@@ -56,6 +56,11 @@
 
 ### Changed
 
+- JSON contract 1.4.0: in full (monitoring) mode, F004 tables carry `bloat_size_at_window_start_bytes`
+  and `bloat_size_at_window_start_at`, the estimate at the window's oldest daily reading
+  (https://gitlab.com/postgres-ai/postgresai/-/work_items/535). Express mode does not emit them.
+  Additive; the schema accepts both as optional.
+
 - JSON contract 1.3.0: in full (monitoring) mode, a checkup node result without data carries
   `available` (false: not collected yet, the query failed, or nothing found where those look the
   same; true: checked, nothing found) and a plain `reason`. Express mode does not emit them.
